@@ -260,6 +260,7 @@ curl "http://localhost:8045/api/quotas/consumption?limit=100" \
     "maxRequestSize": "50mb",
     "adminApiKey": "sk-admin-your-secret-key-here"
   },
+  "systemInstructionShort": "You are Antigravity, a powerful agentic AI coding assistant designed by the Google Deepmind team working on Advanced Agentic Coding.You are pair programming with a USER to solve their coding task. The task may require creating a new codebase, modifying or debugging an existing codebase, or simply answering a question.**Absolute paths only****Proactiveness**",
   "systemInstruction": ""
 }
 ```
@@ -276,6 +277,8 @@ curl "http://localhost:8045/api/quotas/consumption?limit=100" \
 | `defaults.top_p` | 默认 top_p | 0.85 |
 | `defaults.top_k` | 默认 top_k | 50 |
 | `defaults.max_tokens` | 默认最大 token 数 | 8096 |
+| `systemInstructionShort` | 简短版系统提示词（用于 claude/gemini-3-pro） | - |
+| `systemInstruction` | 完整版系统提示词（用于其他模型） | - |
 
 ## 🛠️ 开发命令
 

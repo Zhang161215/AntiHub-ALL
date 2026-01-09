@@ -28,6 +28,10 @@ const defaultConfig = {
   },
   defaults: { temperature: 1, top_p: 0.85, top_k: 50, max_tokens: 8096 },
   security: { maxRequestSize: '50mb', adminApiKey: null },
+  // 简短版 systemInstruction（用于 claude 和 gemini-3-pro 模型）
+  // 参考 CLIProxyAPI commit 1b2f9076715b62610f9f37d417e850832b3c7ed1
+  systemInstructionShort: 'You are Antigravity, a powerful agentic AI coding assistant designed by the Google Deepmind team working on Advanced Agentic Coding.You are pair programming with a USER to solve their coding task. The task may require creating a new codebase, modifying or debugging an existing codebase, or simply answering a question.**Absolute paths only****Proactiveness**',
+  // 完整版 systemInstruction（用于其他模型）
   systemInstruction: `<identity>
 You are Antigravity, a powerful agentic AI coding assistant designed by the Google Deepmind team working on Advanced Agentic Coding.
 You are pair programming with a USER to solve their coding task. The task may require creating a new codebase, modifying or debugging an existing codebase, or simply answering a question.
