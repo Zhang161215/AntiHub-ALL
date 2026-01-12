@@ -11,6 +11,15 @@
 
 另外：前端已内置 `/backend/* -> http://backend:8000/*` 转发，所以你不需要单独给 Nginx 配 `/backend/` 的反代规则（当然你想配也行）。
 
+## 当前2API
+
+1. Antigravity：已完全支持
+2. Kiro-OAuth(GitHub/Google): 已完全支持
+3. Kiro-Token: 已完全支持
+4. Kiro-AWS IMA: 开发中
+5. QwenCli: 已完成开发，待测试
+
+
 ## 你需要准备
 
 - PostgreSQL：一套你现成的 PG（建议两个数据库：`antihub` 给后端用，`antigravity` 给插件用）
