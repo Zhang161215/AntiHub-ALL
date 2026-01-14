@@ -13,6 +13,29 @@ import { countStringTokens } from '../utils/token_counter.js';
 
 const router = express.Router();
 
+function normalizeHeaderValue(value) {
+  if (Array.isArray(value)) return value[0] || '';
+  if (typeof value === 'string') return value;
+  return '';
+}
+
+function resolveAccountType(headers) {
+  const raw =
+    normalizeHeaderValue(headers?.['x-account-type']) ||
+    normalizeHeaderValue(headers?.['x-api-type']) ||
+    '';
+  const normalized = raw.trim().toLowerCase();
+  return normalized || 'antigravity';
+}
+
+function inferAccountTypeFromModel(model) {
+  const normalized = typeof model === 'string' ? model.trim().toLowerCase() : '';
+  if (!normalized) return null;
+  if (normalized.startsWith('qwen')) return 'qwen';
+  if (normalized === 'vision-model') return 'qwen';
+  return null;
+}
+
 function normalizeSubscriptionTier(rawTier) {
   if (!rawTier) return null;
   const value = String(rawTier);
@@ -1213,7 +1236,60 @@ router.get('/api/quotas/consumption/stats/:model_name', authenticateApiKey, asyn
 router.get('/v1/models', authenticateApiKey, async (req, res) => {
   try {
     // 从请求头获取账号类型，默认为 antigravity
-    const accountType = (req.headers['x-account-type'] || 'antigravity').toLowerCase();
+    const headerAccountType =
+      normalizeHeaderValue(req.headers['x-account-type']) ||
+      normalizeHeaderValue(req.headers['x-api-type']);
+    const hasExplicitAccountType = !!(headerAccountType && headerAccountType.trim());
+    const accountType = resolveAccountType(req.headers);
+
+    // Header 未指定时：返回合并后的模型列表，避免默认走 Antigravity 但用户没账号导致模型列表空白/报错。
+    if (!hasExplicitAccountType) {
+      const merged = [];
+
+      try {
+        const models = await multiAccountClient.getAvailableModels(req.user.user_id);
+        if (Array.isArray(models?.data)) {
+          merged.push(...models.data);
+        }
+      } catch (error) {
+        logger.warn(`获取 Antigravity models 失败(已忽略): ${error?.message || error}`);
+      }
+
+      try {
+        const kiroClient = (await import('../api/kiro_client.js')).default;
+        const models = kiroClient.getAvailableModels();
+        if (Array.isArray(models?.data)) {
+          merged.push(...models.data);
+        }
+      } catch (error) {
+        logger.warn(`获取 Kiro models 失败(已忽略): ${error?.message || error}`);
+      }
+
+      try {
+        const qwenClient = (await import('../api/qwen_client.js')).default;
+        const models = qwenClient.getAvailableModels();
+        if (Array.isArray(models?.data)) {
+          merged.push(...models.data);
+        }
+      } catch (error) {
+        logger.warn(`获取 Qwen models 失败(已忽略): ${error?.message || error}`);
+      }
+
+      const created = Math.floor(Date.now() / 1000);
+      const deduped = new Map();
+      for (const item of merged) {
+        const id = typeof item?.id === 'string' ? item.id : null;
+        if (!id) continue;
+        if (!deduped.has(id)) {
+          deduped.set(id, { object: 'model', created, ...item, id });
+        }
+      }
+
+      return res.json({
+        object: 'list',
+        data: Array.from(deduped.values()),
+      });
+    }
 
     if (accountType === 'kiro') {
       // 使用 kiro 账号系统
@@ -1260,8 +1336,20 @@ router.post('/v1/chat/completions', authenticateApiKey, async (req, res) => {
   }
 
   // 从请求头获取账号类型，默认为 antigravity
-  const accountType = (req.headers['x-account-type'] || 'antigravity').toLowerCase();
-  
+  const headerAccountType =
+    normalizeHeaderValue(req.headers['x-account-type']) ||
+    normalizeHeaderValue(req.headers['x-api-type']);
+  const hasExplicitAccountType = !!(headerAccountType && headerAccountType.trim());
+  let accountType = resolveAccountType(req.headers);
+
+  // Header 未指定时，允许根据 model 推断路由（例如 qwen3-* -> Qwen）。
+  if (!hasExplicitAccountType) {
+    const inferred = inferAccountTypeFromModel(model);
+    if (inferred) {
+      accountType = inferred;
+    }
+  }
+
   if (accountType === 'qwen') {
     const qwenClient = (await import('../api/qwen_client.js')).default;
 
@@ -1278,10 +1366,53 @@ router.post('/v1/chat/completions', authenticateApiKey, async (req, res) => {
     res.on('close', abort);
 
     try {
+      const upstreamBody = { ...req.body };
+
+      // 一些 OpenAI SDK 会发送 max_completion_tokens；Qwen 端通常使用 max_tokens。
+      if (typeof upstreamBody.max_completion_tokens === 'number' && upstreamBody.max_tokens == null) {
+        upstreamBody.max_tokens = upstreamBody.max_completion_tokens;
+      }
+      if (upstreamBody.max_completion_tokens != null) {
+        delete upstreamBody.max_completion_tokens;
+      }
+
+      // 避免把只对 OpenAI/Gemini 有意义的字段原样转发给 Qwen 导致上游报错。
+      if (upstreamBody.reasoning_effort != null) {
+        delete upstreamBody.reasoning_effort;
+      }
+      if (upstreamBody.reasoning != null) {
+        delete upstreamBody.reasoning;
+      }
+      if (upstreamBody.image_config != null) {
+        delete upstreamBody.image_config;
+      }
+
+      // Qwen3 流式模式在未定义 tools 时可能出现“串流污染”，注入一个永远不该被调用的空工具即可规避。
+      if (upstreamBody.tools == null || (Array.isArray(upstreamBody.tools) && upstreamBody.tools.length === 0)) {
+        upstreamBody.tools = [
+          {
+            type: 'function',
+            function: {
+              name: 'do_not_call_me',
+              description: 'Do not call this tool under any circumstances.',
+              parameters: { type: 'object', properties: {}, required: [] },
+            },
+          },
+        ];
+      }
+
+      if (upstreamBody.stream) {
+        const streamOptions =
+          upstreamBody.stream_options && typeof upstreamBody.stream_options === 'object'
+            ? upstreamBody.stream_options
+            : {};
+        upstreamBody.stream_options = { ...streamOptions, include_usage: true };
+      }
+
       const upstreamResp = await qwenClient.requestChatCompletions({
         user_id: req.user.user_id,
         user: req.user,
-        body: req.body,
+        body: upstreamBody,
         signal: controller.signal,
       });
 

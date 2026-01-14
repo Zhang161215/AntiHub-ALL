@@ -56,6 +56,19 @@ app.use(routes);
 app.use(kiroRoutes);
 app.use(qwenRoutes);
 
+// 统一错误响应为 JSON（避免 Express 默认返回 HTML Error Page）
+app.use((err, req, res, next) => {
+  const statusCode = err?.statusCode || err?.status || 500;
+  const message = typeof err?.message === 'string' ? err.message : 'Internal Server Error';
+  logger.error('Unhandled error:', message);
+
+  if (res.headersSent) {
+    return next(err);
+  }
+
+  res.status(statusCode).json({ error: message });
+});
+
 const server = app.listen(config.server.port, config.server.host, () => {
   logger.info(`服务器已启动: ${config.server.host}:${config.server.port}`);
 });

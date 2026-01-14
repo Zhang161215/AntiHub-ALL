@@ -243,10 +243,18 @@ class QwenService {
    * @returns {string}
    */
   normalizeResourceURL(resource_url) {
-    if (typeof resource_url !== 'string' || !resource_url.trim()) {
+    if (typeof resource_url !== 'string') {
       return 'portal.qwen.ai';
     }
-    return resource_url.trim().replace(/^https?:\/\//i, '');
+    const trimmed = resource_url.trim();
+    if (!trimmed) {
+      return 'portal.qwen.ai';
+    }
+
+    // token 返回值/导出文件可能携带 scheme 或 path，只保留 host 部分。
+    const withoutScheme = trimmed.replace(/^https?:\/\//i, '');
+    const host = withoutScheme.split(/[/?#]/)[0].trim();
+    return host || 'portal.qwen.ai';
   }
 
   /**
