@@ -8,10 +8,14 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_db_session, get_redis, get_current_user
+from app.api.deps import get_db_session, get_redis, get_current_user, get_current_admin_user
 from app.models.user import User
 from app.services.kiro_service import KiroService, UpstreamAPIError
-from app.schemas.kiro import KiroOAuthAuthorizeRequest, KiroOAuthCallbackRequest
+from app.schemas.kiro import (
+    KiroOAuthAuthorizeRequest,
+    KiroOAuthCallbackRequest,
+    KiroSubscriptionModelRuleUpdateRequest,
+)
 from app.cache import RedisClient
 
 router = APIRouter(prefix="/api/kiro", tags=["Kiro账号管理"])
@@ -527,4 +531,62 @@ async def delete_account(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"删除账号失败: {str(e)}"
+        )
+
+
+# ==================== 订阅层 -> 可用模型（管理员配置） ====================
+
+@router.get(
+    "/admin/subscription-models",
+    summary="获取订阅层可用模型配置",
+    description="获取 Kiro 不同订阅层可用的模型白名单配置（需要管理员权限）",
+)
+async def get_subscription_model_rules(
+    _: User = Depends(get_current_admin_user),
+    service: KiroService = Depends(get_kiro_service),
+):
+    try:
+        return await service.get_subscription_model_rules()
+    except UpstreamAPIError as e:
+        return JSONResponse(
+            status_code=e.status_code,
+            content={
+                "error": e.extracted_message,
+                "type": "api_error",
+            },
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"获取订阅层可用模型配置失败: {str(e)}",
+        )
+
+
+@router.put(
+    "/admin/subscription-models",
+    summary="设置订阅层可用模型配置",
+    description="设置 Kiro 不同订阅层可用的模型白名单配置（需要管理员权限）",
+)
+async def upsert_subscription_model_rule(
+    request: KiroSubscriptionModelRuleUpdateRequest,
+    _: User = Depends(get_current_admin_user),
+    service: KiroService = Depends(get_kiro_service),
+):
+    try:
+        return await service.upsert_subscription_model_rule(
+            subscription=request.subscription,
+            model_ids=request.model_ids,
+        )
+    except UpstreamAPIError as e:
+        return JSONResponse(
+            status_code=e.status_code,
+            content={
+                "error": e.extracted_message,
+                "type": "api_error",
+            },
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"设置订阅层可用模型配置失败: {str(e)}",
         )

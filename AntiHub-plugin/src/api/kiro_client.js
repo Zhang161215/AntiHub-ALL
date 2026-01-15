@@ -4,6 +4,7 @@ import logger from '../utils/logger.js';
 import kiroService from '../services/kiro.service.js';
 import kiroAccountService from '../services/kiro_account.service.js';
 import kiroConsumptionService from '../services/kiro_consumption.service.js';
+import kiroSubscriptionModelService from '../services/kiro_subscription_model.service.js';
 
 /**
  * Kiro API 客户端
@@ -16,7 +17,7 @@ class KiroClient {
    * @param {Array} excludeAccountIds - 要排除的账号ID列表（用于重试时排除已失败的账号）
    * @returns {Promise<Object>} 账号对象
    */
-  async getAvailableAccount(user_id, excludeAccountIds = []) {
+  async getAvailableAccount(user_id, excludeAccountIds = [], modelId = null) {
     let accounts = await kiroAccountService.getAvailableAccounts(user_id);
     
     // 排除已经尝试失败的账号
@@ -24,6 +25,16 @@ class KiroClient {
       accounts = accounts.filter(acc => !excludeAccountIds.includes(acc.account_id));
     }
     
+    // 按订阅层规则过滤可用账号（未配置规则时默认放行，兼容旧行为）
+    if (modelId) {
+      const filtered = await kiroSubscriptionModelService.filterAccountsByModel(accounts, modelId);
+      if (accounts.length > 0 && filtered.length === 0) {
+        const subs = Array.from(new Set(accounts.map(a => a.subscription).filter(Boolean)));
+        throw new Error(`没有可用的Kiro账号可用于模型: ${modelId}（当前账号订阅层: ${subs.join(', ') || 'unknown'}）`);
+      }
+      accounts = filtered;
+    }
+
     if (accounts.length === 0) {
       throw new Error('没有可用的Kiro账号，请先添加账号');
     }
@@ -61,7 +72,7 @@ class KiroClient {
         
         // 尝试获取下一个可用账号
         const newExcludeList = [...excludeAccountIds, account.account_id];
-        return this.getAvailableAccount(user_id, newExcludeList);
+        return this.getAvailableAccount(user_id, newExcludeList, modelId);
       }
     }
 
@@ -77,7 +88,7 @@ class KiroClient {
    * @param {Object} options - 其他选项
    */
   async generateResponse(messages, model, callback, user_id, options = {}) {
-    const account = await this.getAvailableAccount(user_id);
+    const account = await this.getAvailableAccount(user_id, [], model);
     const requestId = crypto.randomUUID().substring(0, 8);
     
     logger.info(`[${requestId}] 开始Kiro请求: model=${model}, user_id=${user_id}, account_id=${account.account_id}`);

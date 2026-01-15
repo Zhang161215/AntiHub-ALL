@@ -3,6 +3,7 @@ import kiroAccountService from '../services/kiro_account.service.js';
 import kiroService from '../services/kiro.service.js';
 import kiroClient from '../api/kiro_client.js';
 import kiroConsumptionService from '../services/kiro_consumption.service.js';
+import kiroSubscriptionModelService from '../services/kiro_subscription_model.service.js';
 import userService from '../services/user.service.js';
 import logger from '../utils/logger.js';
 import config from '../config/config.js';
@@ -789,6 +790,48 @@ router.get('/api/kiro/consumption/stats', authenticateApiKey, async (req, res) =
     });
   } catch (error) {
     logger.error('获取用户消费统计失败:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ==================== Kiro 订阅层 -> 可用模型（管理员配置） ====================
+
+/**
+ * 获取订阅层可用模型配置（管理员）
+ * GET /api/kiro/admin/subscription-models
+ */
+router.get('/api/kiro/admin/subscription-models', authenticateApiKey, requireAdmin, async (req, res) => {
+  try {
+    const rules = await kiroSubscriptionModelService.listSubscriptionModelRules();
+    res.json({ success: true, data: rules });
+  } catch (error) {
+    logger.error('获取订阅层可用模型配置失败:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * 设置订阅层可用模型配置（管理员）
+ * PUT /api/kiro/admin/subscription-models
+ * Body: { subscription, model_ids }，model_ids 为 null 表示删除配置（回到默认放行）
+ */
+router.put('/api/kiro/admin/subscription-models', authenticateApiKey, requireAdmin, async (req, res) => {
+  try {
+    const subscription = req.body?.subscription;
+    const modelIds = req.body?.model_ids ?? req.body?.modelIds ?? null;
+
+    if (typeof subscription !== 'string' || !subscription.trim()) {
+      return res.status(400).json({ error: 'subscription 是必填字段' });
+    }
+
+    if (modelIds !== null && !Array.isArray(modelIds)) {
+      return res.status(400).json({ error: 'model_ids 必须是字符串数组或 null' });
+    }
+
+    const result = await kiroSubscriptionModelService.upsertSubscriptionModelRule(subscription, modelIds);
+    res.json({ success: true, data: result });
+  } catch (error) {
+    logger.error('设置订阅层可用模型配置失败:', error.message);
     res.status(500).json({ error: error.message });
   }
 });

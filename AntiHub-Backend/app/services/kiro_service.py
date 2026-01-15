@@ -103,6 +103,7 @@ class KiroService:
         self.settings = get_settings()
         self.plugin_api_key_repo = PluginAPIKeyRepository(db)
         self.base_url = self.settings.plugin_api_base_url
+        self.admin_key = self.settings.plugin_api_admin_key
         self._redis = redis
     
     @property
@@ -218,6 +219,56 @@ class KiroService:
             
             return response.json()
     
+    async def _proxy_admin_request(
+        self,
+        method: str,
+        path: str,
+        json_data: Optional[Dict[str, Any]] = None,
+        params: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """
+        使用管理员 Key 代理请求到 plug-in API
+
+        用途：全局配置类接口（不绑定具体用户 plug-in key）
+        """
+        if not self.admin_key:
+            raise ValueError("未配置 PLUGIN_API_ADMIN_KEY，无法调用 plug-in 管理接口")
+
+        url = f"{self.base_url}{path}"
+        headers = {"Authorization": f"Bearer {self.admin_key}"}
+
+        async with httpx.AsyncClient() as client:
+            response = await client.request(
+                method=method,
+                url=url,
+                json=json_data,
+                params=params,
+                headers=headers,
+                timeout=1200.0,
+            )
+
+            if response.status_code >= 400:
+                upstream_response = None
+                try:
+                    upstream_response = response.json()
+                except Exception:
+                    try:
+                        upstream_response = {"raw": response.text}
+                    except Exception:
+                        pass
+
+                logger.warning(
+                    f"plug-in admin API错误: status={response.status_code}, url={url}, response={upstream_response}"
+                )
+
+                raise UpstreamAPIError(
+                    status_code=response.status_code,
+                    message=f"plug-in admin API返回错误: {response.status_code}",
+                    upstream_response=upstream_response,
+                )
+
+            return response.json()
+
     async def _proxy_stream_request(
         self,
         user_id: int,
@@ -461,6 +512,27 @@ class KiroService:
             path=f"/api/kiro/accounts/{account_id}"
         )
     
+    # ==================== Kiro 订阅层 -> 可用模型（管理员配置） ====================
+
+    async def get_subscription_model_rules(self) -> Dict[str, Any]:
+        """获取订阅层可用模型配置（管理员，透传 plug-in）"""
+        return await self._proxy_admin_request(
+            method="GET",
+            path="/api/kiro/admin/subscription-models",
+        )
+
+    async def upsert_subscription_model_rule(
+        self,
+        subscription: str,
+        model_ids: Optional[List[str]],
+    ) -> Dict[str, Any]:
+        """设置订阅层可用模型配置（管理员，透传 plug-in）"""
+        return await self._proxy_admin_request(
+            method="PUT",
+            path="/api/kiro/admin/subscription-models",
+            json_data={"subscription": subscription, "model_ids": model_ids},
+        )
+
     # ==================== Kiro OpenAI兼容API ====================
     
     async def get_models(self, user_id: int) -> Dict[str, Any]:

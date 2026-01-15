@@ -156,6 +156,16 @@ class KiroUserConsumptionStats(BaseModel):
 
 # ==================== 通用响应 ====================
 
+class KiroSubscriptionModelRuleUpdateRequest(BaseModel):
+    """设置订阅层可用模型配置（管理员）"""
+
+    subscription: str = Field(..., description="订阅层名称（如 KIRO FREE / KIRO PRO）")
+    model_ids: Optional[List[str]] = Field(
+        None,
+        description="允许的模型ID列表；传 null 表示删除配置（回到默认放行）",
+    )
+
+
 class KiroAPIResponse(BaseModel):
     """通用Kiro API响应"""
     success: bool

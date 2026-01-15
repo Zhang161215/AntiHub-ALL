@@ -66,8 +66,8 @@ async def list_models(
         use_kiro = config_type == "kiro"
         
         if use_kiro:
-            # 检查beta权限
-            if current_user.beta != 1:
+            # 检查 beta 权限（管理员放行）
+            if current_user.beta != 1 and getattr(current_user, "trust_level", 0) < 3:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="Kiro配置仅对beta计划用户开放"
@@ -156,7 +156,7 @@ async def chat_completions(
     use_kiro = effective_config_type == "kiro"
 
     try:
-        if use_kiro and current_user.beta != 1:
+        if use_kiro and current_user.beta != 1 and getattr(current_user, "trust_level", 0) < 3:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Kiro配置仅对beta计划用户开放",

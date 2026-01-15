@@ -181,6 +181,20 @@ async def get_current_user(
         )
 
 
+async def get_current_admin_user(
+    current_user: User = Depends(get_current_user),
+) -> User:
+    """
+    获取当前管理员用户（trust_level >= 3）
+    """
+    if getattr(current_user, "trust_level", 0) < 3:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="需要管理员权限",
+        )
+    return current_user
+
+
 async def get_optional_current_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(HTTPBearer(auto_error=False)),
     auth_service: AuthService = Depends(get_auth_service)

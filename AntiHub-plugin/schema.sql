@@ -1414,6 +1414,23 @@ ALTER TABLE ONLY public.kiro_consumption_log
 
 
 --
+-- Name: kiro_subscription_models; Type: TABLE; Schema: public; Owner: antigravity
+--
+
+CREATE TABLE public.kiro_subscription_models (
+    subscription text NOT NULL,
+    allowed_model_ids jsonb DEFAULT '[]'::jsonb NOT NULL,
+    created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+    updated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT kiro_subscription_models_pkey PRIMARY KEY (subscription)
+);
+
+
+ALTER TABLE public.kiro_subscription_models OWNER TO antigravity;
+
+--
+-- PostgreSQL database dump complete
+--
 -- PostgreSQL database dump complete
 --
 

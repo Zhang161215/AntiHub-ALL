@@ -1870,3 +1870,40 @@ export async function deleteQwenAccount(accountId: string): Promise<any> {
   );
   return result.data;
 }
+
+// ==================== Kiro 订阅层 -> 可用模型（管理员配置） ====================
+
+export interface KiroSubscriptionModelRule {
+  subscription: string;
+  configured: boolean;
+  model_ids: string[] | null;
+}
+
+/**
+ * 获取订阅层可用模型配置（管理员）
+ */
+export async function getKiroSubscriptionModelRules(): Promise<KiroSubscriptionModelRule[]> {
+  const result = await fetchWithAuth<{ success: boolean; data: KiroSubscriptionModelRule[] }>(
+    `${API_BASE_URL}/api/kiro/admin/subscription-models`,
+    { method: 'GET' }
+  );
+  return result.data;
+}
+
+/**
+ * 设置订阅层可用模型配置（管理员）
+ * modelIds 为 null：删除配置（回到默认放行）
+ */
+export async function upsertKiroSubscriptionModelRule(
+  subscription: string,
+  modelIds: string[] | null
+): Promise<any> {
+  const result = await fetchWithAuth<{ success: boolean; data: any }>(
+    `${API_BASE_URL}/api/kiro/admin/subscription-models`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({ subscription, model_ids: modelIds }),
+    }
+  );
+  return result.data;
+}

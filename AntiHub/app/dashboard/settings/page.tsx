@@ -1,12 +1,26 @@
 'use client';
 
 import { useEffect, useState, useRef } from 'react';
-import { getAPIKeys, generateAPIKey, deleteAPIKey, type PluginAPIKey } from '@/lib/api';
+import {
+  deleteAPIKey,
+  generateAPIKey,
+  getAPIKeys,
+  getCurrentUser,
+  getKiroSubscriptionModelRules,
+  getOpenAIModels,
+  upsertKiroSubscriptionModelRule,
+  type KiroSubscriptionModelRule,
+  type OpenAIModel,
+  type PluginAPIKey,
+  type UserResponse,
+} from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
+import { Switch } from '@/components/ui/switch';
 import {
   Dialog,
   DialogContent,
@@ -33,6 +47,14 @@ export default function SettingsPage() {
   const [deletingKeyId, setDeletingKeyId] = useState<number | null>(null);
   const [selectedConfigType, setSelectedConfigType] = useState<'antigravity' | 'kiro' | 'qwen'>('antigravity');
   const [keyName, setKeyName] = useState('');
+  const [currentUser, setCurrentUser] = useState<UserResponse | null>(null);
+
+  const isAdmin = (currentUser?.trust_level ?? 0) >= 3;
+  const [kiroModels, setKiroModels] = useState<OpenAIModel[]>([]);
+  const [subscriptionRules, setSubscriptionRules] = useState<KiroSubscriptionModelRule[]>([]);
+  const [isKiroConfigLoading, setIsKiroConfigLoading] = useState(false);
+  const [savingSubscription, setSavingSubscription] = useState<string | null>(null);
+  const [newSubscription, setNewSubscription] = useState('');
 
   const [apiEndpoint, setApiEndpoint] = useState(() => getPublicApiBaseUrl());
 
@@ -52,10 +74,158 @@ export default function SettingsPage() {
     }
   };
 
+  const normalizeSubscription = (value: string) => value.trim().replace(/\s+/g, ' ').toUpperCase();
+
+  const loadKiroAdminConfig = async () => {
+    setIsKiroConfigLoading(true);
+
+    try {
+      try {
+        const rules = await getKiroSubscriptionModelRules();
+        setSubscriptionRules(rules);
+      } catch (err) {
+        toasterRef.current?.show({
+          title: '加载失败',
+          message: err instanceof Error ? err.message : '获取订阅层模型配置失败',
+          variant: 'error',
+          position: 'top-right',
+        });
+      }
+
+      try {
+        const modelsResp = await getOpenAIModels('kiro');
+        setKiroModels(modelsResp.data || []);
+      } catch (err) {
+        setKiroModels([]);
+        toasterRef.current?.show({
+          title: '加载失败',
+          message: err instanceof Error ? err.message : '获取 Kiro 模型列表失败',
+          variant: 'warning',
+          position: 'top-right',
+        });
+      }
+    } finally {
+      setIsKiroConfigLoading(false);
+    }
+  };
+
+  const setSubscriptionRule = async (subscription: string, modelIds: string[] | null) => {
+    const normalized = normalizeSubscription(subscription);
+    if (!normalized) return;
+
+    setSavingSubscription(normalized);
+    try {
+      await upsertKiroSubscriptionModelRule(normalized, modelIds);
+
+      setSubscriptionRules((prev) => {
+        const next = prev.map((r) =>
+          r.subscription === normalized
+            ? { ...r, configured: modelIds !== null, model_ids: modelIds }
+            : r
+        );
+
+        if (!next.some((r) => r.subscription === normalized)) {
+          next.push({ subscription: normalized, configured: modelIds !== null, model_ids: modelIds });
+          next.sort((a, b) => a.subscription.localeCompare(b.subscription));
+        }
+
+        return next;
+      });
+
+      toasterRef.current?.show({
+        title: '已保存',
+        message: `已更新 ${normalized}`,
+        variant: 'success',
+        position: 'top-right',
+      });
+    } catch (err) {
+      toasterRef.current?.show({
+        title: '保存失败',
+        message: err instanceof Error ? err.message : '保存订阅层配置失败',
+        variant: 'error',
+        position: 'top-right',
+      });
+    } finally {
+      setSavingSubscription(null);
+    }
+  };
+
+  const handleToggleWhitelist = async (subscription: string, enabled: boolean) => {
+    if (!enabled) {
+      await setSubscriptionRule(subscription, null);
+      return;
+    }
+
+    if (kiroModels.length === 0) {
+      toasterRef.current?.show({
+        title: '无法启用',
+        message: '未获取到 Kiro 模型列表，无法启用白名单',
+        variant: 'warning',
+        position: 'top-right',
+      });
+      return;
+    }
+
+    const allModelIds = kiroModels.map((m) => m.id).filter(Boolean);
+    await setSubscriptionRule(subscription, allModelIds);
+  };
+
+  const handleToggleModel = async (subscription: string, modelId: string, checked: boolean) => {
+    const normalized = normalizeSubscription(subscription);
+    const rule = subscriptionRules.find((r) => r.subscription === normalized);
+    if (!rule || !rule.configured) return;
+
+    const current = Array.isArray(rule.model_ids) ? rule.model_ids : [];
+    const next = checked
+      ? Array.from(new Set([...current, modelId]))
+      : current.filter((id) => id !== modelId);
+
+    await setSubscriptionRule(normalized, next);
+  };
+
+  const handleAddSubscription = async () => {
+    const normalized = normalizeSubscription(newSubscription);
+    if (!normalized) return;
+
+    if (subscriptionRules.some((r) => r.subscription === normalized)) {
+      toasterRef.current?.show({
+        title: '已存在',
+        message: `${normalized} 已在列表中`,
+        variant: 'warning',
+        position: 'top-right',
+      });
+      return;
+    }
+
+    if (kiroModels.length === 0) {
+      toasterRef.current?.show({
+        title: '无法添加',
+        message: '未获取到 Kiro 模型列表，无法创建白名单配置',
+        variant: 'warning',
+        position: 'top-right',
+      });
+      return;
+    }
+
+    const allModelIds = kiroModels.map((m) => m.id).filter(Boolean);
+    await setSubscriptionRule(normalized, allModelIds);
+    setNewSubscription('');
+  };
+
   useEffect(() => {
     const loadData = async () => {
-      await loadAPIKeys();
-      setIsLoading(false);
+      try {
+        await loadAPIKeys();
+
+        const userData = await getCurrentUser();
+        setCurrentUser(userData);
+
+        if (userData.trust_level >= 3) {
+          await loadKiroAdminConfig();
+        }
+      } finally {
+        setIsLoading(false);
+      }
     };
     loadData();
   }, []);
@@ -299,6 +469,118 @@ export default function SettingsPage() {
             </div>
           </CardContent>
         </Card>
+
+        {isAdmin && (
+          <Card className="mt-6">
+            <CardHeader>
+              <div className="flex items-center justify-between gap-3">
+                <div className="space-y-1.5">
+                  <CardTitle className="flex items-center gap-2">
+                    Kiro 订阅层模型权限
+                  </CardTitle>
+                  <CardDescription>
+                    未配置时默认全部允许；启用白名单后按勾选模型限制。
+                  </CardDescription>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={loadKiroAdminConfig}
+                  disabled={isKiroConfigLoading}
+                >
+                  {isKiroConfigLoading ? (
+                    <>
+                      <MorphingSquare className="size-4 mr-2" />
+                      刷新中
+                    </>
+                  ) : (
+                    '刷新'
+                  )}
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              <div className="space-y-2">
+                <Label className="text-sm font-medium">新增订阅层</Label>
+                <div className="flex gap-2">
+                  <Input
+                    value={newSubscription}
+                    onChange={(e) => setNewSubscription(e.target.value)}
+                    placeholder="例如：KIRO FREE"
+                    disabled={savingSubscription !== null}
+                  />
+                  <Button
+                    onClick={handleAddSubscription}
+                    disabled={!newSubscription.trim() || savingSubscription !== null || kiroModels.length === 0}
+                  >
+                    添加
+                  </Button>
+                </div>
+                {kiroModels.length === 0 && (
+                  <div className="rounded-lg border border-yellow-500/20 bg-yellow-500/10 p-3 text-sm text-muted-foreground">
+                    暂时无法获取 Kiro 模型列表（可能需要加入 Beta），将无法启用/创建白名单。
+                  </div>
+                )}
+              </div>
+
+              {subscriptionRules.length > 0 ? (
+                <div className="space-y-3">
+                  {subscriptionRules.map((rule) => (
+                    <div key={rule.subscription} className="rounded-lg border p-4 space-y-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="space-y-1">
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono text-sm">{rule.subscription}</span>
+                            {rule.configured ? (
+                              <Badge>白名单</Badge>
+                            ) : (
+                              <Badge variant="secondary">默认全允许</Badge>
+                            )}
+                          </div>
+                          <p className="text-xs text-muted-foreground">
+                            {rule.configured ? '仅允许勾选的模型' : '未配置：默认允许全部模型'}
+                          </p>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          {savingSubscription === rule.subscription && (
+                            <MorphingSquare className="size-4" />
+                          )}
+                          <Switch
+                            isSelected={rule.configured}
+                            onChange={(selected) => handleToggleWhitelist(rule.subscription, !!selected)}
+                            isDisabled={savingSubscription !== null && savingSubscription !== rule.subscription}
+                          />
+                        </div>
+                      </div>
+
+                      {rule.configured && (
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                          {kiroModels.map((m) => (
+                            <label key={m.id} className="flex items-center gap-2 text-sm">
+                              <Checkbox
+                                checked={Array.isArray(rule.model_ids) ? rule.model_ids.includes(m.id) : false}
+                                onCheckedChange={(checked) =>
+                                  handleToggleModel(rule.subscription, m.id, !!checked)
+                                }
+                                disabled={savingSubscription === rule.subscription}
+                              />
+                              <span className="font-mono text-xs">{m.id}</span>
+                            </label>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-sm text-muted-foreground">
+                  暂无订阅层记录，你可以手动添加。
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
       </div>
 
       {/* 创建 API Key 弹窗 */}
