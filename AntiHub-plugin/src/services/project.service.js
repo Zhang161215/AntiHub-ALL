@@ -3,6 +3,34 @@ import accountService from './account.service.js';
 import config from '../config/config.js';
 
 class ProjectService {
+  async listGcpProjects(accessToken) {
+    const url = 'https://cloudresourcemanager.googleapis.com/v1/projects';
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+    });
+
+    if (!response.ok) {
+      const responseText = await response.text();
+      throw new Error(`listGcpProjects API request failed (${response.status}): ${responseText}`);
+    }
+
+    const data = await response.json();
+    return Array.isArray(data?.projects) ? data.projects : [];
+  }
+
+  selectDefaultGcpProjectId(projects) {
+    if (!Array.isArray(projects) || projects.length === 0) return '';
+
+    const active = projects.find((p) => p && typeof p === 'object' && p.lifecycleState === 'ACTIVE');
+    const candidate = active || projects[0];
+    const projectId = candidate?.projectId;
+    return typeof projectId === 'string' ? projectId.trim() : '';
+  }
+
   getApiEndpoints() {
     const endpoints = Array.isArray(config?.api?.endpoints) ? config.api.endpoints : [];
     if (endpoints.length > 0) {

@@ -670,6 +670,38 @@ export async function refreshAccount(cookieId: string): Promise<Account> {
   return result.data;
 }
 
+export interface GcpProjectItem {
+  project_id: string;
+  name?: string;
+  lifecycle_state?: string;
+}
+
+export interface AccountProjects {
+  cookie_id: string;
+  current_project_id: string;
+  default_project_id: string;
+  projects: GcpProjectItem[];
+}
+
+export async function getAccountProjects(cookieId: string): Promise<AccountProjects> {
+  const result = await fetchWithAuth<{ success: boolean; data: AccountProjects }>(
+    `${API_BASE_URL}/api/plugin-api/accounts/${cookieId}/projects`,
+    { method: 'GET' }
+  );
+  return result.data;
+}
+
+export async function updateAccountProjectId(cookieId: string, projectId: string): Promise<Account> {
+  const result = await fetchWithAuth<{ success: boolean; data: Account }>(
+    `${API_BASE_URL}/api/plugin-api/accounts/${cookieId}/project-id`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({ project_id: projectId }),
+    }
+  );
+  return result.data;
+}
+
 export async function deleteAccount(cookieId: string): Promise<any> {
   const result = await fetchWithAuth<{ success: boolean; data: any }>(
     `${API_BASE_URL}/api/plugin-api/accounts/${cookieId}`,

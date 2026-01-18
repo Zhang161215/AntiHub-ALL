@@ -692,6 +692,124 @@ router.post('/api/accounts/:cookie_id/refresh', authenticateApiKey, async (req, 
  * 禁用共享账号时：减少用户共享配额池的 quota 和 max_quota
  * 启用共享账号时：增加用户共享配额池的 quota 和 max_quota
  */
+/**
+ * 获取当前账号可用的 GCP Project 列表（Cloud Resource Manager）
+ * GET /api/accounts/:cookie_id/projects
+ */
+router.get('/api/accounts/:cookie_id/projects', authenticateApiKey, async (req, res) => {
+  try {
+    const { cookie_id } = req.params;
+    const account = await accountService.getAccountByCookieId(cookie_id);
+
+    if (!account) {
+      return res.status(404).json({ error: '账号不存在' });
+    }
+
+    if (!req.isAdmin && account.user_id !== req.user.user_id) {
+      return res.status(403).json({ error: '无权访问此账号' });
+    }
+
+    if (!account.refresh_token) {
+      return res.status(400).json({ error: '账号缺少refresh_token，无法获取项目列表' });
+    }
+
+    // 确保 access_token 可用（过期则刷新）
+    let accessToken = account.access_token;
+    if (accountService.isTokenExpired(account)) {
+      logger.info(`账号token已过期，正在刷新: cookie_id=${cookie_id}`);
+      const tokenData = await oauthService.refreshAccessToken(account.refresh_token);
+      const expires_at = Date.now() + (tokenData.expires_in * 1000);
+      accessToken = tokenData.access_token;
+      await accountService.updateAccountToken(cookie_id, accessToken, expires_at);
+    }
+
+    const projects = await projectService.listGcpProjects(accessToken);
+    const defaultProjectId = projectService.selectDefaultGcpProjectId(projects);
+
+    const safeProjects = Array.isArray(projects)
+      ? projects
+          .map((p) => ({
+            project_id: typeof p?.projectId === 'string' ? p.projectId : '',
+            name: typeof p?.name === 'string' ? p.name : '',
+            lifecycle_state: typeof p?.lifecycleState === 'string' ? p.lifecycleState : '',
+          }))
+          .filter((p) => typeof p.project_id === 'string' && p.project_id.trim() !== '')
+      : [];
+
+    res.json({
+      success: true,
+      data: {
+        cookie_id,
+        current_project_id: account.project_id_0 || '',
+        default_project_id: defaultProjectId || '',
+        projects: safeProjects,
+      },
+    });
+  } catch (error) {
+    logger.error('获取项目列表失败:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * 更新账号自定义 Project ID（优先使用）
+ * PUT /api/accounts/:cookie_id/project-id
+ * Body: { project_id }
+ */
+router.put('/api/accounts/:cookie_id/project-id', authenticateApiKey, async (req, res) => {
+  try {
+    const { cookie_id } = req.params;
+    const project_id = typeof req.body?.project_id === 'string' ? req.body.project_id.trim() : '';
+
+    if (!project_id) {
+      return res.status(400).json({ error: 'project_id不能为空' });
+    }
+
+    const account = await accountService.getAccountByCookieId(cookie_id);
+    if (!account) {
+      return res.status(404).json({ error: '账号不存在' });
+    }
+
+    if (!req.isAdmin && account.user_id !== req.user.user_id) {
+      return res.status(403).json({ error: '无权访问此账号' });
+    }
+
+    const updatedAccount = await accountService.updateProjectIds(
+      cookie_id,
+      project_id,
+      account.is_restricted,
+      account.ineligible,
+      account.paid_tier
+    );
+
+    const safeAccount = {
+      cookie_id: updatedAccount.cookie_id,
+      user_id: updatedAccount.user_id,
+      name: updatedAccount.name,
+      is_shared: updatedAccount.is_shared,
+      status: updatedAccount.status,
+      need_refresh: updatedAccount.need_refresh,
+      expires_at: updatedAccount.expires_at,
+      project_id_0: updatedAccount.project_id_0,
+      is_restricted: updatedAccount.is_restricted,
+      paid_tier: updatedAccount.paid_tier,
+      ineligible: updatedAccount.ineligible,
+      last_used_at: updatedAccount.last_used_at,
+      created_at: updatedAccount.created_at,
+      updated_at: updatedAccount.updated_at,
+    };
+
+    res.json({
+      success: true,
+      message: 'Project ID已更新',
+      data: safeAccount,
+    });
+  } catch (error) {
+    logger.error('更新Project ID失败:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 router.get('/api/accounts/:cookie_id/detail', authenticateApiKey, async (req, res) => {
   try {
     const { cookie_id } = req.params;

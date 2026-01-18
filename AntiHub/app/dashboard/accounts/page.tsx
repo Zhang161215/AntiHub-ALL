@@ -7,6 +7,8 @@ import {
   updateAccountStatus,
   updateAccountName,
   refreshAccount,
+  getAccountProjects,
+  updateAccountProjectId,
   getAccountQuotas,
   getAccountCredentials,
   getAntigravityAccountDetail,
@@ -23,6 +25,7 @@ import {
   updateQwenAccountStatus,
   updateQwenAccountName,
   type Account,
+  type AccountProjects,
   type AntigravityAccountDetail,
   type KiroAccount,
   type QwenAccount
@@ -110,6 +113,15 @@ export default function AccountsPage() {
   const [isRenamingAntigravity, setIsRenamingAntigravity] = useState(false);
 
   // 重命名 Qwen 账号 Dialog 状态
+  // Project ID Dialog 状态（Antigravity）
+  const [isProjectIdDialogOpen, setIsProjectIdDialogOpen] = useState(false);
+  const [projectIdEditingAccount, setProjectIdEditingAccount] = useState<Account | null>(null);
+  const [accountProjects, setAccountProjects] = useState<AccountProjects | null>(null);
+  const [isLoadingProjects, setIsLoadingProjects] = useState(false);
+  const [projectIdInput, setProjectIdInput] = useState('');
+  const [projectIdSelectValue, setProjectIdSelectValue] = useState('');
+  const [isUpdatingProjectId, setIsUpdatingProjectId] = useState(false);
+
   const [isQwenRenameDialogOpen, setIsQwenRenameDialogOpen] = useState(false);
   const [renamingQwenAccount, setRenamingQwenAccount] = useState<QwenAccount | null>(null);
   const [newQwenAccountName, setNewQwenAccountName] = useState('');
@@ -273,6 +285,81 @@ export default function AccountsPage() {
       });
     } finally {
       setRefreshingCookieId(null);
+    }
+  };
+
+  const handleEditProjectId = async (account: Account) => {
+    setProjectIdEditingAccount(account);
+    setAccountProjects(null);
+    setProjectIdInput(account.project_id_0 || '');
+    setProjectIdSelectValue('');
+    setIsProjectIdDialogOpen(true);
+    setIsLoadingProjects(true);
+
+    try {
+      const data = await getAccountProjects(account.cookie_id);
+      setAccountProjects(data);
+
+      const initial = (data.current_project_id || data.default_project_id || account.project_id_0 || '').trim();
+      setProjectIdInput(initial);
+
+      if (initial && Array.isArray(data.projects) && data.projects.some(p => p.project_id === initial)) {
+        setProjectIdSelectValue(initial);
+      } else {
+        setProjectIdSelectValue('');
+      }
+    } catch (err) {
+      toasterRef.current?.show({
+        title: '获取项目列表失败',
+        message: err instanceof Error ? err.message : '获取项目列表失败',
+        variant: 'error',
+        position: 'top-right',
+      });
+    } finally {
+      setIsLoadingProjects(false);
+    }
+  };
+
+  const handleSubmitProjectId = async () => {
+    if (!projectIdEditingAccount) return;
+
+    const projectId = projectIdInput.trim();
+    if (!projectId) {
+      toasterRef.current?.show({
+        title: '输入错误',
+        message: '请输入 Project ID',
+        variant: 'warning',
+        position: 'top-right',
+      });
+      return;
+    }
+
+    setIsUpdatingProjectId(true);
+    try {
+      const updated = await updateAccountProjectId(projectIdEditingAccount.cookie_id, projectId);
+      setAccounts(prev => prev.map(a => (a.cookie_id === updated.cookie_id ? { ...a, ...updated } : a)));
+
+      toasterRef.current?.show({
+        title: '更新成功',
+        message: 'Project ID 已更新',
+        variant: 'success',
+        position: 'top-right',
+      });
+
+      setIsProjectIdDialogOpen(false);
+      setProjectIdEditingAccount(null);
+      setAccountProjects(null);
+      setProjectIdInput('');
+      setProjectIdSelectValue('');
+    } catch (err) {
+      toasterRef.current?.show({
+        title: '更新失败',
+        message: err instanceof Error ? err.message : '更新Project ID失败',
+        variant: 'error',
+        position: 'top-right',
+      });
+    } finally {
+      setIsUpdatingProjectId(false);
     }
   };
 
@@ -989,7 +1076,11 @@ export default function AccountsPage() {
                                     <IconRefresh className="size-4 mr-2" />
                                     {refreshingCookieId === account.cookie_id ? '刷新中...' : '刷新项目ID'}
                                   </DropdownMenuItem>
-                                  <DropdownMenuItem onClick={() => handleRenameAntigravity(account)}>
+                                   <DropdownMenuItem onClick={() => handleEditProjectId(account)}>
+                                     <IconEdit className="size-4 mr-2" />
+                                     修改项目ID
+                                   </DropdownMenuItem>
+                                   <DropdownMenuItem onClick={() => handleRenameAntigravity(account)}>
                                     <IconEdit className="size-4 mr-2" />
                                     重命名
                                   </DropdownMenuItem>
@@ -1479,6 +1570,114 @@ export default function AccountsPage() {
       </Dialog>
 
       {/* Antigravity 账号详情 - 响应式弹窗 */}
+      {/* 修改 Project ID Dialog */}
+      <Dialog
+        open={isProjectIdDialogOpen}
+        onOpenChange={(open) => {
+          setIsProjectIdDialogOpen(open);
+          if (!open) {
+            setProjectIdEditingAccount(null);
+            setAccountProjects(null);
+            setProjectIdInput('');
+            setProjectIdSelectValue('');
+            setIsLoadingProjects(false);
+            setIsUpdatingProjectId(false);
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-[520px]">
+          <DialogHeader>
+            <DialogTitle>修改 Project ID</DialogTitle>
+            <DialogDescription className="break-all">
+              {projectIdEditingAccount ? `账号ID: ${projectIdEditingAccount.cookie_id}` : ''}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label>从列表选择</Label>
+              <Select
+                value={projectIdSelectValue}
+                onValueChange={(value) => {
+                  setProjectIdSelectValue(value);
+                  setProjectIdInput(value);
+                }}
+                disabled={isLoadingProjects || isUpdatingProjectId || !accountProjects}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue
+                    placeholder={
+                      isLoadingProjects
+                        ? '加载中...'
+                        : accountProjects
+                          ? '选择一个项目'
+                          : '未加载项目列表'
+                    }
+                  />
+                </SelectTrigger>
+                <SelectContent>
+                  {accountProjects?.projects?.map((p) => (
+                    <SelectItem key={p.project_id} value={p.project_id}>
+                      {p.project_id}
+                      {p.name ? ` (${p.name})` : ''}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {accountProjects?.default_project_id ? (
+                <p className="text-xs text-muted-foreground break-all">
+                  默认建议：{accountProjects.default_project_id}
+                </p>
+              ) : null}
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="project-id-input">自定义 Project ID</Label>
+              <Input
+                id="project-id-input"
+                placeholder="例如：my-gcp-project"
+                value={projectIdInput}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  setProjectIdInput(value);
+                  const trimmed = value.trim();
+                  if (trimmed && accountProjects?.projects?.some((p) => p.project_id === trimmed)) {
+                    setProjectIdSelectValue(trimmed);
+                  } else {
+                    setProjectIdSelectValue('');
+                  }
+                }}
+                disabled={isUpdatingProjectId}
+              />
+              <p className="text-xs text-muted-foreground">保存后写入并优先使用。</p>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setIsProjectIdDialogOpen(false)}
+              disabled={isUpdatingProjectId}
+            >
+              取消
+            </Button>
+            <Button
+              onClick={handleSubmitProjectId}
+              disabled={isUpdatingProjectId || !projectIdInput.trim()}
+            >
+              {isUpdatingProjectId ? (
+                <>
+                  <MorphingSquare className="size-4 mr-2" />
+                  保存中...
+                </>
+              ) : (
+                '保存'
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <ResponsiveDialog open={isAntigravityDetailDialogOpen} onOpenChange={setIsAntigravityDetailDialogOpen} dismissible={false}>
         <ResponsiveDialogContent className="sm:max-w-[600px] max-h-[90vh] flex flex-col p-0" showHandle={false}>
           <ResponsiveDialogHeader className="shrink-0 px-4 pt-4 pb-2 border-b">
