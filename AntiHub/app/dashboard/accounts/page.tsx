@@ -2142,7 +2142,7 @@ export default function AccountsPage() {
               <Label htmlFor="project-id-input">自定义 Project ID</Label>
               <Input
                 id="project-id-input"
-                placeholder="例如：my-gcp-project"
+                placeholder="例如：xxx-yyy-zzz"
                 value={projectIdInput}
                 onChange={(e) => {
                   const value = e.target.value;

@@ -473,18 +473,6 @@ class OAuthService {
       if (!is_restricted) {
         project_id_0 = projectService.extractProjectId(projectData?.cloudaicompanionProject);
 
-        if (!project_id_0) {
-          try {
-            const gcpProjects = await projectService.listGcpProjects(access_token);
-            project_id_0 = projectService.selectDefaultGcpProjectId(gcpProjects);
-            if (project_id_0) {
-              logger.info(`Cloud Resource Manager default project selected: cookie_id=${cookie_id}, project_id=${project_id_0}`);
-            }
-          } catch (error) {
-            logger.warn(`Cloud Resource Manager project listing failed: cookie_id=${cookie_id}, error=${error?.message || error}`);
-          }
-        }
-
         // loadCodeAssist 没返回 project_id 时，尝试 onboardUser 获取真实 project_id
         if (!project_id_0) {
           try {
