@@ -2,7 +2,7 @@ import express from 'express';
 import { Readable } from 'stream';
 import oauthService from '../services/oauth.service.js';
 import accountService from '../services/account.service.js';
-import quotaService from '../services/quota.service.js';
+import quotaService from '../services/quota.service.compat.js';
 import userService from '../services/user.service.js';
 import projectService from '../services/project.service.js';
 import multiAccountClient from '../api/multi_account_client.js';
