@@ -1171,12 +1171,14 @@ class CodexService:
         request_data: Dict[str, Any],
         *,
         user_agent: Optional[str] = None,
-    ) -> Dict[str, Any]:
+    ) -> Tuple[Dict[str, Any], Any]:
         """
         非流式：内部仍以 stream=true 请求上游，然后从 SSE 里提取 response.completed。
-        返回 OpenAI `/v1/responses` 的 response object（不是 event wrapper）。
+        返回：
+        - response object（不是 event wrapper）
+        - account：本次使用的 CodexAccount ORM 实例（用于计费/统计）
         """
-        client, resp, _account = await self.open_codex_responses_stream(user_id, request_data, user_agent=user_agent)
+        client, resp, account = await self.open_codex_responses_stream(user_id, request_data, user_agent=user_agent)
         try:
             data = await resp.aread()
         finally:
@@ -1186,7 +1188,42 @@ class CodexService:
         response_obj = self._extract_response_object_from_sse(data)
         if not response_obj:
             raise ValueError("Codex 上游未返回 response.completed")
-        return response_obj
+        return response_obj, account
+
+    async def record_account_consumed_tokens(
+        self,
+        *,
+        user_id: int,
+        account_id: int,
+        input_tokens: int,
+        output_tokens: int,
+        cached_tokens: int,
+        total_tokens: int,
+    ) -> None:
+        """
+        记录 Codex 账号 Token 消耗（best effort，不影响主链路）。
+
+        - input_tokens：不含缓存部分（= input_tokens - cached_tokens）
+        - total_tokens：输入+输出（= input + cached + output）
+        """
+        try:
+            await self.repo.increment_consumed_tokens(
+                account_id,
+                user_id,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cached_tokens=cached_tokens,
+                total_tokens=total_tokens,
+            )
+            await self.db.commit()
+        except Exception:
+            await self.db.rollback()
+            logger.warning(
+                "record codex token usage failed: user_id=%s account_id=%s",
+                user_id,
+                account_id,
+                exc_info=True,
+            )
 
     async def update_account_status(self, user_id: int, account_id: int, status: int) -> Dict[str, Any]:
         if status not in (0, 1):

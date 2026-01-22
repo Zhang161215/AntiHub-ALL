@@ -2008,6 +2008,10 @@ export interface CodexAccount {
   quota_remaining?: number | null;
   quota_currency?: string | null;
   quota_updated_at?: string | null;
+  consumed_input_tokens?: number;
+  consumed_output_tokens?: number;
+  consumed_cached_tokens?: number;
+  consumed_total_tokens?: number;
   limit_5h_used_percent?: number | null;
   limit_5h_reset_at?: string | null;
   limit_week_used_percent?: number | null;

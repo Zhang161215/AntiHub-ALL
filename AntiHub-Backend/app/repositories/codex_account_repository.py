@@ -239,6 +239,47 @@ class CodexAccountRepository:
         await self.db.flush()
         return await self.get_by_id_and_user_id(account_id, user_id)
 
+    async def increment_consumed_tokens(
+        self,
+        account_id: int,
+        user_id: int,
+        *,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        cached_tokens: int = 0,
+        total_tokens: int = 0,
+    ) -> None:
+        """
+        原子累加 Token 消耗计数（不负责 commit）。
+
+        - input_tokens：不含缓存部分（= input_tokens - cached_tokens）
+        - total_tokens：输入+输出（= input + cached + output）
+        """
+        in_tok = max(int(input_tokens or 0), 0)
+        out_tok = max(int(output_tokens or 0), 0)
+        cache_tok = max(int(cached_tokens or 0), 0)
+        total_tok = max(int(total_tokens or 0), 0)
+
+        values = {}
+        if in_tok:
+            values["consumed_input_tokens"] = CodexAccount.consumed_input_tokens + in_tok
+        if out_tok:
+            values["consumed_output_tokens"] = CodexAccount.consumed_output_tokens + out_tok
+        if cache_tok:
+            values["consumed_cached_tokens"] = CodexAccount.consumed_cached_tokens + cache_tok
+        if total_tok:
+            values["consumed_total_tokens"] = CodexAccount.consumed_total_tokens + total_tok
+
+        if not values:
+            return
+
+        await self.db.execute(
+            update(CodexAccount)
+            .where(CodexAccount.id == account_id, CodexAccount.user_id == user_id)
+            .values(**values)
+        )
+        await self.db.flush()
+
     async def delete(self, account_id: int, user_id: int) -> bool:
         result = await self.db.execute(
             delete(CodexAccount).where(CodexAccount.id == account_id, CodexAccount.user_id == user_id)

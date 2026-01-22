@@ -11,7 +11,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Optional, TYPE_CHECKING
 
-from sqlalchemy import String, Integer, DateTime, ForeignKey, Text, Float
+from sqlalchemy import String, Integer, BigInteger, DateTime, ForeignKey, Text, Float
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
@@ -110,6 +110,34 @@ class CodexAccount(Base):
         DateTime(timezone=True),
         nullable=True,
         comment="额度更新时间（可选）",
+    )
+
+    consumed_input_tokens: Mapped[int] = mapped_column(
+        BigInteger,
+        default=0,
+        nullable=False,
+        comment="累计输入Token（不含缓存部分）",
+    )
+
+    consumed_output_tokens: Mapped[int] = mapped_column(
+        BigInteger,
+        default=0,
+        nullable=False,
+        comment="累计输出Token",
+    )
+
+    consumed_cached_tokens: Mapped[int] = mapped_column(
+        BigInteger,
+        default=0,
+        nullable=False,
+        comment="累计缓存Token",
+    )
+
+    consumed_total_tokens: Mapped[int] = mapped_column(
+        BigInteger,
+        default=0,
+        nullable=False,
+        comment="累计总Token（输入+输出）",
     )
 
     limit_5h_used_percent: Mapped[Optional[int]] = mapped_column(

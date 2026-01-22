@@ -1674,7 +1674,7 @@ export default function AccountsPage() {
                       <TableRow>
                         <TableHead className="min-w-[100px]">账号ID</TableHead>
                         <TableHead className="min-w-[160px]">账号名称</TableHead>
-                        <TableHead className="min-w-[220px]">邮箱</TableHead>
+                        <TableHead className="min-w-[160px]">消耗Token</TableHead>
                         <TableHead className="min-w-[120px]">订阅</TableHead>
                         <TableHead className="min-w-[80px]">状态</TableHead>
                         <TableHead className="min-w-[120px]">5小时/周剩余</TableHead>
@@ -1694,8 +1694,20 @@ export default function AccountsPage() {
                           <TableCell>
                             {account.account_name || account.email || '未命名'}
                           </TableCell>
-                          <TableCell className="text-sm text-muted-foreground">
-                            {account.email || '-'}
+                          <TableCell className="font-mono text-sm whitespace-nowrap">
+                            {(() => {
+                              const total = account.consumed_total_tokens;
+                              const input = account.consumed_input_tokens ?? 0;
+                              const output = account.consumed_output_tokens ?? 0;
+                              const cached = account.consumed_cached_tokens ?? 0;
+                              const title = `输入 ${input.toLocaleString('zh-CN')} / 输出 ${output.toLocaleString('zh-CN')} / 缓存 ${cached.toLocaleString('zh-CN')}`;
+
+                              return (
+                                <span title={title}>
+                                  {typeof total === 'number' ? total.toLocaleString('zh-CN') : '-'}
+                                </span>
+                              );
+                            })()}
                           </TableCell>
                           <TableCell>
                             <Badge variant="secondary">
@@ -2460,6 +2472,44 @@ export default function AccountsPage() {
                       <p className="text-sm">
                         {detailCodexAccount.token_expires_at
                           ? new Date(detailCodexAccount.token_expires_at).toLocaleString('zh-CN')
+                          : '-'}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-3">
+                  <h3 className="text-sm font-semibold text-muted-foreground">Token 消耗</h3>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">输入Token</Label>
+                      <p className="text-sm font-mono">
+                        {typeof detailCodexAccount.consumed_input_tokens === 'number'
+                          ? detailCodexAccount.consumed_input_tokens.toLocaleString('zh-CN')
+                          : '-'}
+                      </p>
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">输出Token</Label>
+                      <p className="text-sm font-mono">
+                        {typeof detailCodexAccount.consumed_output_tokens === 'number'
+                          ? detailCodexAccount.consumed_output_tokens.toLocaleString('zh-CN')
+                          : '-'}
+                      </p>
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">缓存Token</Label>
+                      <p className="text-sm font-mono">
+                        {typeof detailCodexAccount.consumed_cached_tokens === 'number'
+                          ? detailCodexAccount.consumed_cached_tokens.toLocaleString('zh-CN')
+                          : '-'}
+                      </p>
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">总Token</Label>
+                      <p className="text-sm font-mono">
+                        {typeof detailCodexAccount.consumed_total_tokens === 'number'
+                          ? detailCodexAccount.consumed_total_tokens.toLocaleString('zh-CN')
                           : '-'}
                       </p>
                     </div>
