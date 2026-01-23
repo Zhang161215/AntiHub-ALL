@@ -288,6 +288,37 @@ def _safe_str(value: Any) -> str:
     return str(value).strip()
 
 
+def _extract_error_detail_code(err_text: str) -> str:
+    """
+    从上游错误 JSON 中提取 code（优先 detail.code）。
+
+    典型样例：
+    - {"detail":{"code":"deactivated_workspace"}}
+    """
+    raw = (err_text or "").strip()
+    if not raw:
+        return ""
+    try:
+        obj = json.loads(raw)
+    except Exception:
+        return ""
+    if not isinstance(obj, dict):
+        return ""
+
+    detail = obj.get("detail")
+    if isinstance(detail, dict):
+        return _safe_str(detail.get("code"))
+
+    # 兜底：部分实现可能把 code 放在顶层或 error.code
+    top = _safe_str(obj.get("code"))
+    if top:
+        return top
+    err = obj.get("error")
+    if isinstance(err, dict):
+        return _safe_str(err.get("code"))
+    return ""
+
+
 def _default_codex_account_name(email: Optional[str], openai_account_id: Optional[str]) -> str:
     """
     Default account display name:
@@ -1055,7 +1086,7 @@ class CodexService:
 
         - 账号选择：fill-first（先用第一个号，满了/冻结/禁用才换下一个）
         - 429：自动落库限额字段并切换下一个账号
-        - 401：尝试刷新 token；失败则跳过该账号
+        - 401/402/403：自动冻结并切换下一个账号（401 会先尝试刷新 token）
 
         返回：
         - client: httpx.AsyncClient（由调用方负责 aclose）
@@ -1150,8 +1181,22 @@ class CodexService:
                     last_error = "token 已刷新，重试该账号"
                     exclude_ids.discard(int(getattr(selected, "id", 0) or 0))
                     continue
-                await self._disable_account(selected, reason="unauthorized")
-                last_error = "账号未授权（已禁用），已自动切换下一个账号"
+                await self._freeze_account(selected, reason="unauthorized")
+                last_error = "账号未授权（已冻结），已自动切换下一个账号"
+                continue
+
+            if resp.status_code == 402:
+                code = _extract_error_detail_code(err_text)
+                await self._freeze_account(selected, reason=f"upstream_402:{code or 'unknown'}")
+                last_error = (
+                    f"账号触发组织/Workspace 限制（HTTP 402{('/' + code) if code else ''}，已冻结），已自动切换下一个账号"
+                )
+                continue
+
+            if resp.status_code == 403:
+                code = _extract_error_detail_code(err_text)
+                await self._freeze_account(selected, reason=f"upstream_403:{code or 'unknown'}")
+                last_error = f"账号无权限（HTTP 403{('/' + code) if code else ''}，已冻结），已自动切换下一个账号"
                 continue
 
             # 其他错误：不做轮询，直接抛出
@@ -1431,8 +1476,8 @@ class CodexService:
                 if resp.status_code == 401 and attempt == 0:
                     refreshed = await self._try_refresh_account(account, creds)
                     if not refreshed:
-                        await self._disable_account(account, reason="auth_401")
-                        raise ValueError("账号 token 已失效（401），且无法 refresh_token 刷新（已禁用）")
+                        await self._freeze_account(account, reason="auth_401")
+                        raise ValueError("账号 token 已失效（401），且无法 refresh_token 刷新（已冻结）")
 
                     new_creds = self._load_account_credentials(account)
                     creds.clear()
@@ -1656,8 +1701,8 @@ class CodexService:
 
                     refreshed = await self._try_refresh_account(account, creds)
                     if not refreshed:
-                        await self._disable_account(account, reason="unauthorized")
-                        raise ValueError("账号未授权（已禁用）")
+                        await self._freeze_account(account, reason="unauthorized")
+                        raise ValueError("账号未授权（已冻结）")
 
                     try:
                         creds = self._load_account_credentials(account)
@@ -1887,6 +1932,35 @@ class CodexService:
         _ = reason
         try:
             account.status = 0
+            await self.db.flush()
+            await self.db.commit()
+        except Exception:
+            await self.db.rollback()
+
+    async def _freeze_account(self, account: Any, *, reason: str, until: Optional[datetime] = None) -> None:
+        """
+        冻结账号（用于组织封禁/无权限等“非限额”错误）。
+
+        说明：
+        - 当前模型的 freeze_reason / is_frozen 仅由限额字段推导，因此这里复用 week 字段实现“冻结”效果
+        - until 为空时默认冻结 10 年（基本等价永久，但避免 reset_at 缺失导致的“缺少重置时间”提示）
+        """
+        _ = reason
+        now = _now_utc()
+        freeze_until = until or (now + timedelta(days=3650))
+        if freeze_until.tzinfo is None:
+            freeze_until = freeze_until.replace(tzinfo=timezone.utc)
+
+        existing = getattr(account, "limit_week_reset_at", None)
+        if isinstance(existing, datetime):
+            if existing.tzinfo is None:
+                existing = existing.replace(tzinfo=timezone.utc)
+            if existing > freeze_until:
+                freeze_until = existing
+
+        try:
+            account.limit_week_used_percent = 100
+            account.limit_week_reset_at = freeze_until
             await self.db.flush()
             await self.db.commit()
         except Exception:
