@@ -160,6 +160,37 @@ class KiroClient {
   }
 
   /**
+   * MCP WebSearch（模型内置联网）
+   * - 不走 generateAssistantResponse
+   * - 直接调用 /mcp tools/call(web_search)
+   */
+  async webSearch(query, model, user_id, accountOverride = null) {
+    const account = accountOverride || await this.getAvailableAccount(user_id, [], model);
+    const requestId = crypto.randomUUID().substring(0, 8);
+
+    logger.info(`[${requestId}] 开始Kiro MCP WebSearch: model=${model}, user_id=${user_id}, account_id=${account.account_id}`);
+
+    try {
+      return await kiroService.mcpWebSearch(query, account.access_token, account.machineid);
+    } catch (error) {
+      logger.error(`[${requestId}] MCP WebSearch失败:`, error.message);
+
+      // 402 / 403 常见为额度/权限问题，直接禁用该账号（行为与 generateResponse 保持一致）
+      if (
+        typeof error.message === 'string' &&
+        (error.message.includes('HTTP 402') || error.message.includes('HTTP 403'))
+      ) {
+        try {
+          kiroAccountService.updateAccountStatus(account.account_id, 0);
+          logger.warn(`Kiro账号已禁用(MCP, ${error.message.includes('HTTP 402') ? 402 : 403}): account_id=${account.account_id}`);
+        } catch {}
+      }
+
+      throw error;
+    }
+  }
+
+  /**
    * 处理流式响应
    * @param {Object} response - HTTP响应对象
    * @param {Function} callback - 回调函数
