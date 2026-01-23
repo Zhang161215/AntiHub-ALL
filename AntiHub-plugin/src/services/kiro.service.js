@@ -32,6 +32,10 @@ const KIRO_ENDPOINTS = {
     hostname: 'q.us-east-1.amazonaws.com',
     path: '/generateAssistantResponse'
   },
+  MCP: {
+    hostname: 'q.us-east-1.amazonaws.com',
+    path: '/mcp'
+  },
   USAGE_LIMITS: {
     hostname: 'q.us-east-1.amazonaws.com',
     path: '/getUsageLimits'
@@ -520,6 +524,29 @@ class KiroService {
   }
 
   /**
+   * 获取 MCP 请求头（用于 /mcp tools/call）
+   * @param {string} accessToken - 访问令牌
+   * @param {string} machineid - 机器ID
+   * @returns {Object} 请求头
+   */
+  getMcpHeaders(accessToken, machineid) {
+    const invocationId = crypto.randomUUID();
+    const kiroUserAgent = `KiroIDE-${KIRO_IDE_VERSION}-${machineid}`;
+
+    // MCP 端点参考 kiro.rs：不带 codewhisperer optout 等字段，避免触发上游校验
+    return {
+      'content-type': 'application/json',
+      'x-amz-user-agent': `aws-sdk-js/1.0.26 ${kiroUserAgent}`,
+      'user-agent': `aws-sdk-js/1.0.26 ua/2.1 os/win32#10.0.26100 lang/js md/nodejs#22.21.1 api/codewhispererstreaming#1.0.26 m/E ${kiroUserAgent}`,
+      'host': KIRO_ENDPOINTS.MCP.hostname,
+      'amz-sdk-invocation-id': invocationId,
+      'amz-sdk-request': 'attempt=1; max=3',
+      'Authorization': `Bearer ${accessToken}`,
+      'Connection': 'close'
+    };
+  }
+
+  /**
    * 获取Kiro模型ID
    * @param {string} model - 模型名称
    * @returns {string} Kiro模型ID
@@ -607,6 +634,23 @@ class KiroService {
     const systemMessages = patchedMessages.filter(m => m.role === 'system');
     const nonSystemMessages = patchedMessages.filter(m => m.role !== 'system');
 
+    // OpenAI 格式：多工具调用会产生连续多个 role=tool 的消息（每个 tool_call 一条）
+    // Kiro/CodeWhisperer 更偏向一次性提交 toolResults 数组；这里把“末尾连续 tool 消息”整体收敛到一次处理里，避免拆成多段导致 400
+    let tailToolMessages = [];
+    let coreMessages = nonSystemMessages;
+    if (nonSystemMessages.length > 0) {
+      let idx = nonSystemMessages.length;
+      while (idx > 0 && nonSystemMessages[idx - 1]?.role === 'tool') {
+        tailToolMessages.unshift(nonSystemMessages[idx - 1]);
+        idx--;
+      }
+      if (tailToolMessages.length > 0 && idx > 0) {
+        coreMessages = nonSystemMessages.slice(0, idx);
+      } else {
+        tailToolMessages = [];
+      }
+    }
+
     // 构建历史记录
     const history = [];
 
@@ -636,8 +680,9 @@ class KiroService {
 
     // 处理对话历史（除了最后一条消息）
     let userBuffer = [];
-    for (let i = 0; i < nonSystemMessages.length - 1; i++) {
-      const msg = nonSystemMessages[i];
+    const historyEndIndex = tailToolMessages.length > 0 ? coreMessages.length : coreMessages.length - 1;
+    for (let i = 0; i < historyEndIndex; i++) {
+      const msg = coreMessages[i];
 
       if (msg.role === 'user' || msg.role === 'tool') {
         userBuffer.push(msg);
@@ -677,7 +722,7 @@ class KiroService {
 
         history.push({
           assistantResponseMessage: {
-            content: textContent || '',
+            content: (textContent || '').trim() || (toolUses.length > 0 ? 'There is a tool use.' : ''),
             ...(toolUses.length > 0 ? { toolUses } : {})
           }
         });
@@ -717,7 +762,7 @@ class KiroService {
     }
 
     // 处理当前消息（最后一条）
-    const lastMessage = nonSystemMessages[nonSystemMessages.length - 1];
+    const lastMessage = coreMessages[coreMessages.length - 1];
     
     // 检查最后一条消息是否是tool消息（OpenAI格式的工具结果）
     const isToolMessage = lastMessage.role === 'tool';
@@ -727,7 +772,11 @@ class KiroService {
     
     // 提取工具结果：从user消息的content中提取tool_result块，或从tool消息转换
     let currentToolResults = [];
-    if (isToolMessage) {
+    if (tailToolMessages.length > 0) {
+      currentToolResults = tailToolMessages
+        .map(m => this.convertToolMessageToResult(m))
+        .filter(Boolean);
+    } else if (isToolMessage) {
       const toolResult = this.convertToolMessageToResult(lastMessage);
       if (toolResult) {
         currentToolResults = [toolResult];
@@ -740,20 +789,26 @@ class KiroService {
     if (currentToolResults.length > 0) {
       // 找到工具调用之前的用户消息（用于 currentMessage.content）
       let userContentBeforeToolCall = '';
-      for (let i = nonSystemMessages.length - 2; i >= 0; i--) {
-        const msg = nonSystemMessages[i];
+      let imagesBeforeToolCall = [];
+      for (let i = coreMessages.length - 1; i >= 0; i--) {
+        const msg = coreMessages[i];
         if (msg.role === 'user') {
           const textContent = this.extractTextContent(msg.content);
           const toolResultsInMsg = this.extractToolResults(msg.content);
           // 找到一条有文本内容且不只是工具结果的用户消息
           if (textContent && toolResultsInMsg.length === 0) {
             userContentBeforeToolCall = textContent;
+            imagesBeforeToolCall = this.extractImages(msg.content);
             break;
           }
         }
       }
       
       // 获取工具结果的文本内容（用于 history 中的 userInputMessage.content）
+      if (!userContentBeforeToolCall && options.tools?.length > 0) {
+        userContentBeforeToolCall = '鎵ц宸ュ叿浠诲姟';
+      }
+
       const toolResultTextContent = currentToolResults.map(tr =>
         tr.content.map(c => c.text || '').join('')
       ).join('\n');
@@ -794,7 +849,7 @@ class KiroService {
               userInputMessageContext,
               content: userContentBeforeToolCall,  // 工具调用之前的用户消息
               modelId,
-              images: currentImages,
+              images: imagesBeforeToolCall.length > 0 ? imagesBeforeToolCall : currentImages,
               origin: KIRO_DEFAULTS.ORIGIN
             }
           },
@@ -1016,11 +1071,21 @@ class KiroService {
    * 转换工具为CodeWhisperer格式
    */
   convertToolsToCodeWhisperer(tools) {
+    const ensureObjectSchema = (schema) => {
+      if (!schema || typeof schema !== 'object') {
+        return { type: 'object', properties: {} };
+      }
+      if (schema.type == null) {
+        return { ...schema, type: 'object', properties: schema.properties || {} };
+      }
+      return schema;
+    };
+
     return tools.map(t => ({
       toolSpecification: {
         name: t.function?.name || t.name,
         description: t.function?.description || t.description || '',
-        inputSchema: { json: t.function?.parameters || t.input_schema || {} }
+        inputSchema: { json: ensureObjectSchema(t.function?.parameters || t.input_schema) }
       }
     }));
   }
@@ -1032,6 +1097,111 @@ class KiroService {
     // 经验结论：chatTriggerType= AUTO 在 Kiro / CodeWhisperer 上游会触发 400
     // 统一使用 MANUAL，避免 "Improperly formed request."
     return 'MANUAL';
+  }
+
+  /**
+   * MCP WebSearch：调用 Kiro 的 /mcp tools/call(web_search)
+   * @param {string} query - 搜索关键词
+   * @param {string} accessToken - Kiro access token
+   * @param {string} machineid - 机器ID
+   * @returns {Promise<Object>} { toolUseId, query, results }
+   */
+  async mcpWebSearch(query, accessToken, machineid) {
+    const trimmed = String(query || '').trim();
+    if (!trimmed) {
+      throw new Error('web_search query 不能为空');
+    }
+
+    const random22 = this._randomAlnum(22, true);
+    const random8 = this._randomAlnum(8, false);
+    const requestId = `web_search_tooluse_${random22}_${Date.now()}_${random8}`;
+    const toolUseId = `srvtoolu_${crypto.randomUUID().replace(/-/g, '')}`;
+
+    const payload = {
+      id: requestId,
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: {
+        name: 'web_search',
+        arguments: { query: trimmed }
+      }
+    };
+
+    const requestBody = JSON.stringify(payload);
+    const headers = this.getMcpHeaders(accessToken, machineid);
+    headers['Content-Length'] = Buffer.byteLength(requestBody);
+
+    const raw = await this._httpsJsonRequest({
+      hostname: KIRO_ENDPOINTS.MCP.hostname,
+      path: KIRO_ENDPOINTS.MCP.path,
+      method: 'POST',
+      headers
+    }, requestBody);
+
+    // MCP JSON-RPC response
+    if (raw?.error) {
+      const code = raw.error?.code ?? -1;
+      const msg = raw.error?.message ?? 'Unknown MCP error';
+      throw new Error(`MCP error: ${code} - ${msg}`);
+    }
+
+    const first = raw?.result?.content?.[0];
+    const text = first && first.type === 'text' ? first.text : null;
+    let results = null;
+    if (typeof text === 'string' && text.trim()) {
+      try {
+        results = JSON.parse(text);
+      } catch (e) {
+        results = { results: [], error: 'Invalid MCP result JSON', raw: text };
+      }
+    } else {
+      results = { results: [], error: 'Empty MCP result' };
+    }
+
+    return { toolUseId, query: trimmed, results };
+  }
+
+  _randomAlnum(length, mixedCase) {
+    const charset = mixedCase
+      ? 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
+      : 'abcdefghijklmnopqrstuvwxyz0123456789';
+    let out = '';
+    for (let i = 0; i < length; i++) {
+      const idx = crypto.randomInt(0, charset.length);
+      out += charset[idx];
+    }
+    return out;
+  }
+
+  _httpsJsonRequest(options, body) {
+    const requestId = crypto.randomUUID().substring(0, 8);
+
+    return new Promise((resolve, reject) => {
+      const req = https.request(options, (res) => {
+        let raw = '';
+        res.on('data', (chunk) => (raw += chunk));
+        res.on('end', () => {
+          if (res.statusCode !== 200) {
+            logger.error(`[${requestId}] MCP请求失败: HTTP ${res.statusCode} - ${raw}`);
+            return reject(new Error(`HTTP ${res.statusCode}: ${raw}`));
+          }
+          try {
+            resolve(JSON.parse(raw));
+          } catch (e) {
+            logger.error(`[${requestId}] MCP响应JSON解析失败: ${e.message}`);
+            reject(new Error(`MCP响应JSON解析失败: ${e.message}`));
+          }
+        });
+      });
+
+      req.on('error', (error) => {
+        logger.error(`[${requestId}] MCP请求异常:`, error.message);
+        reject(error);
+      });
+
+      if (body) req.write(body);
+      req.end();
+    });
   }
 
   /**

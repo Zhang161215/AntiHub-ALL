@@ -77,6 +77,10 @@ class CodexAccountResponse(BaseModel):
     quota_remaining: Optional[float] = None
     quota_currency: Optional[str] = None
     quota_updated_at: Optional[datetime] = None
+    consumed_input_tokens: int = 0
+    consumed_output_tokens: int = 0
+    consumed_cached_tokens: int = 0
+    consumed_total_tokens: int = 0
     limit_5h_used_percent: Optional[int] = None
     limit_5h_reset_at: Optional[datetime] = None
     limit_week_used_percent: Optional[int] = None

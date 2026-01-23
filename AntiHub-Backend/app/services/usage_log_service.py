@@ -14,12 +14,15 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, Tuple
 
+from sqlalchemy import delete, select
+
 from app.db.session import get_session_maker
 from app.models.usage_log import UsageLog
 
 logger = logging.getLogger(__name__)
 
 MAX_ERROR_MESSAGE_LENGTH = 2000
+MAX_LOGS_PER_CHANNEL = 200
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -38,6 +41,36 @@ def _truncate_message(message: Optional[str]) -> Optional[str]:
     if len(msg) <= MAX_ERROR_MESSAGE_LENGTH:
         return msg
     return msg[:MAX_ERROR_MESSAGE_LENGTH] + "…"
+
+
+def _config_type_filter(config_type: Optional[str]):
+    if config_type is None:
+        return UsageLog.config_type.is_(None)
+    return UsageLog.config_type == config_type
+
+
+async def _trim_usage_logs(
+    db,
+    *,
+    user_id: int,
+    config_type: Optional[str],
+    keep: int = MAX_LOGS_PER_CHANNEL,
+) -> None:
+    if keep <= 0:
+        stmt = delete(UsageLog).where(UsageLog.user_id == user_id).where(
+            _config_type_filter(config_type)
+        )
+        await db.execute(stmt)
+        return
+
+    ids_to_delete = (
+        select(UsageLog.id)
+        .where(UsageLog.user_id == user_id)
+        .where(_config_type_filter(config_type))
+        .order_by(UsageLog.created_at.desc(), UsageLog.id.desc())
+        .offset(keep)
+    )
+    await db.execute(delete(UsageLog).where(UsageLog.id.in_(ids_to_delete)))
 
 
 def extract_openai_usage(payload: Dict[str, Any]) -> Tuple[int, int, int]:
@@ -77,6 +110,58 @@ def extract_openai_usage(payload: Dict[str, Any]) -> Tuple[int, int, int]:
     return input_tokens_i, output_tokens_i, total_tokens_i
 
 
+def extract_openai_usage_details(payload: Dict[str, Any]) -> Tuple[int, int, int, int]:
+    """
+    在 extract_openai_usage 的基础上，额外提取 cached_tokens（若存在）。
+
+    cached_tokens 兼容：
+    - usage.cached_tokens / usage.cache_tokens
+    - usage.prompt_tokens_details.cached_tokens
+    - usage.input_tokens_details.cached_tokens
+    """
+    input_tokens_i, output_tokens_i, total_tokens_i = extract_openai_usage(payload)
+
+    usage: Dict[str, Any] = {}
+
+    raw_usage = payload.get("usage")
+    if isinstance(raw_usage, dict):
+        usage = raw_usage
+
+    # OpenAI Responses streaming: data 里是 event wrapper（含 response 字段）
+    if not usage:
+        response_obj = payload.get("response")
+        if isinstance(response_obj, dict) and isinstance(response_obj.get("usage"), dict):
+            usage = response_obj["usage"]
+
+    if not usage:
+        x_groq = payload.get("x_groq")
+        if isinstance(x_groq, dict) and isinstance(x_groq.get("usage"), dict):
+            usage = x_groq["usage"]
+
+    cached_tokens = max(
+        _safe_int(usage.get("cached_tokens"), 0),
+        _safe_int(usage.get("cache_tokens"), 0),
+    )
+
+    prompt_details = usage.get("prompt_tokens_details")
+    if isinstance(prompt_details, dict):
+        cached_tokens = max(
+            cached_tokens,
+            _safe_int(prompt_details.get("cached_tokens"), 0),
+            _safe_int(prompt_details.get("cache_tokens"), 0),
+        )
+
+    input_details = usage.get("input_tokens_details")
+    if isinstance(input_details, dict):
+        cached_tokens = max(
+            cached_tokens,
+            _safe_int(input_details.get("cached_tokens"), 0),
+            _safe_int(input_details.get("cache_tokens"), 0),
+        )
+
+    return input_tokens_i, output_tokens_i, total_tokens_i, max(cached_tokens, 0)
+
+
 @dataclass
 class SSEUsageTracker:
     """
@@ -89,6 +174,7 @@ class SSEUsageTracker:
     input_tokens: int = 0
     output_tokens: int = 0
     total_tokens: int = 0
+    cached_tokens: int = 0
     success: bool = True
     status_code: Optional[int] = None
     error_message: Optional[str] = None
@@ -117,11 +203,12 @@ class SSEUsageTracker:
 
             if isinstance(payload, dict):
                 # usage
-                in_tok, out_tok, total_tok = extract_openai_usage(payload)
-                if in_tok or out_tok or total_tok:
+                in_tok, out_tok, total_tok, cached_tok = extract_openai_usage_details(payload)
+                if in_tok or out_tok or total_tok or cached_tok:
                     self.input_tokens = in_tok
                     self.output_tokens = out_tok
                     self.total_tokens = total_tok
+                    self.cached_tokens = cached_tok
                     self._seen_usage = True
 
                 # error（兼容 Responses: response.error）
@@ -196,5 +283,12 @@ class UsageLogService:
                 )
                 db.add(log)
                 await db.commit()
+
+                try:
+                    await _trim_usage_logs(db, user_id=user_id, config_type=config_type)
+                    await db.commit()
+                except Exception as e:
+                    await db.rollback()
+                    logger.warning(f"清理 usage_log 失败: {e}")
         except Exception as e:
             logger.warning(f"记录 usage_log 失败: {e}")

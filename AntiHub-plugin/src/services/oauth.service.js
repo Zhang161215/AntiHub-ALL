@@ -3,7 +3,7 @@ import https from 'https';
 import logger from '../utils/logger.js';
 import config from '../config/config.js';
 import accountService from './account.service.js';
-import quotaService from './quota.service.js';
+import quotaService from './quota.service.compat.js';
 import projectService from './project.service.js';
 
 const CLIENT_ID = '1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com';
@@ -570,7 +570,8 @@ class OAuthService {
     if (is_shared === 1) {
       for (const modelName of modelNames) {
         const modelInfo = mergedModels[modelName];
-        const accountQuota = modelInfo?.quotaInfo?.remainingFraction ?? 1.0;
+        const { remainingFraction, resetTime } = quotaService.extractModelQuotaInfo(modelInfo);
+        const accountQuota = remainingFraction ?? (resetTime ? 0 : 1.0);
 
         try {
           await quotaService.addUserSharedQuota(user_id, modelName, accountQuota);

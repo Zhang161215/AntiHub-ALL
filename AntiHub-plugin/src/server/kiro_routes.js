@@ -912,9 +912,11 @@ router.post('/v1/kiro/chat/completions', authenticateApiKey, async (req, res) =>
   req.setTimeout(600000); // 10分钟 = 600000毫秒
   res.setTimeout(600000);
 
-  const { messages, model, stream = true, tools, tool_choice } = req.body;
+  const { messages, model, stream = true, tools, tool_choice, conversationState, conversation_state } = req.body;
+  const rawConversationState = conversationState || conversation_state;
+  const hasConversationState = rawConversationState && typeof rawConversationState === 'object';
 
-  if (!messages) {
+  if (!messages && !hasConversationState) {
     return res.status(400).json({ error: 'messages是必需的' });
   }
 
@@ -924,8 +926,169 @@ router.post('/v1/kiro/chat/completions', authenticateApiKey, async (req, res) =>
 
   const options = { tools, tool_choice };
 
+  // 模型内置联网（对接 Kiro MCP web_search）
+  // 参考 kiro.rs：仅当 tools 只包含一个 web_search 时，走内置 WebSearch 分支。
+  const getToolName = (t) => (t?.function?.name || t?.name || t?.toolSpecification?.name || t?.tool_specification?.name || '').toString();
+  const effectiveTools = hasConversationState
+    ? rawConversationState?.currentMessage?.userInputMessage?.userInputMessageContext?.tools
+    : tools;
+  const isWebSearchOnly =
+    Array.isArray(effectiveTools) &&
+    effectiveTools.length === 1 &&
+    getToolName(effectiveTools[0]).trim().toLowerCase() === 'web_search';
+
+  const extractTextFromContent = (content) => {
+    if (typeof content === 'string') return content;
+    if (Array.isArray(content)) {
+      return content
+        .filter((b) => b && b.type === 'text' && typeof b.text === 'string')
+        .map((b) => b.text)
+        .join('');
+    }
+    return '';
+  };
+
+  const extractWebSearchQuery = (msgs) => {
+    let userMsg = null;
+    if (Array.isArray(msgs)) {
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        const m = msgs[i];
+        if (m && m.role === 'user') {
+          userMsg = m;
+          break;
+        }
+      }
+    }
+
+    const normalize = (raw) => {
+      let q = String(raw || '').trim();
+      if (!q) return null;
+
+      // Claude WebSearch 常见前缀（kiro.rs 同款）
+      const PREFIX = 'Perform a web search for the query: ';
+      if (q.startsWith(PREFIX)) q = q.slice(PREFIX.length).trim();
+
+      // 可选：显式 query 格式
+      const m = q.match(/^(?:query|关键词|搜索|查询)\s*[:：]\s*(.+)$/i);
+      if (m && m[1]) q = String(m[1]).trim();
+
+      const original = q;
+
+      // 极简中文口头语清理（保守：清理后太短则回退）
+      const stripOnce = (s, prefixes) => {
+        for (const p of prefixes) {
+          if (s.startsWith(p)) return s.slice(p.length);
+        }
+        return s;
+      };
+
+      let changed = true;
+      while (changed) {
+        const before = q;
+        q = q.replace(/^[\s:：,，。.!?？、]+/u, '');
+        q = stripOnce(q, ['箱宝', '请帮我', '可以帮我', '能不能帮我', '帮我', '帮忙', '请你', '麻烦你', '请', '麻烦', '能否', '能不能', '可以']);
+        q = stripOnce(q, ['联网', '上网', '在线']);
+        q = stripOnce(q, ['查一下', '查下', '查一查', '查查', '查询一下', '搜索一下', '搜一下', '搜下', '搜一搜', '查询', '搜索', '检索', '找一下', '找下', '找', '查']);
+        q = q.replace(/^[\s:：,，。.!?？、]+/u, '');
+        changed = q !== before;
+      }
+
+      q = q.trim();
+      if (q.length >= 2) return q;
+      return original.trim() || null;
+    };
+
+    return normalize(extractTextFromContent(userMsg?.content));
+  };
+
+  const buildWebSearchSummary = (query, results) => {
+    const list = Array.isArray(results?.results) ? results.results : [];
+    let summary = `Here are the search results for \"${query}\":\n\n`;
+
+    if (list.length > 0) {
+      for (let i = 0; i < list.length; i++) {
+        const r = list[i] || {};
+        const title = (r.title || '').toString();
+        const url = (r.url || '').toString();
+        const snippet = r.snippet != null ? String(r.snippet) : '';
+
+        summary += `${i + 1}. **${title}**\n`;
+        if (snippet) {
+          const truncated = snippet.length > 200 ? `${snippet.slice(0, 200)}...` : snippet;
+          summary += `   ${truncated}\n`;
+        }
+        summary += `   Source: ${url}\n\n`;
+      }
+    } else {
+      summary += 'No results found.\n';
+    }
+
+    summary += '\nPlease note that these are web search results and may not be fully accurate or up-to-date.';
+    return summary;
+  };
+
+  const extractLastUserText = (msgs) => {
+    if (!Array.isArray(msgs)) return '';
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i];
+      if (m && m.role === 'user') return extractTextFromContent(m.content);
+    }
+    return '';
+  };
+
+  // 将搜索结果喂回模型，让模型生成最终回答（而不是直接把结果列表回传给用户）
+  const buildWebSearchAnswerPrompt = (question, query, results) => {
+    const q = String(query || '').trim();
+    const questionText = String(question || '').trim() || q;
+    const list = Array.isArray(results?.results) ? results.results : [];
+
+    const items = list.slice(0, 8).map((r, i) => {
+      const title = (r?.title || '').toString();
+      const url = (r?.url || '').toString();
+      const snippet = r?.snippet != null ? String(r.snippet) : '';
+      const truncated = snippet.length > 400 ? `${snippet.slice(0, 400)}...` : snippet;
+
+      let block = `${i + 1}. ${title}\nSource: ${url}`;
+      if (truncated) block = `${i + 1}. ${title}\n${truncated}\nSource: ${url}`;
+      return block;
+    }).join('\n\n');
+
+    return [
+      '你将获得一组网页搜索结果（可能不完全准确）。请严格基于这些结果回答用户问题，避免编造。',
+      '要求：用与用户问题相同的语言回答；引用具体事实时在句末附上来源链接（URL）；输出最终答案，不要原样复述搜索结果列表。',
+      '',
+      `用户问题：${questionText}`,
+      '',
+      `搜索关键词：${q}`,
+      '',
+      '搜索结果：',
+      items || '(无结果)'
+    ].join('\n');
+  };
+
   // 计算输入token数
-  const inputText = messages.map(m => {
+  const buildPseudoMessagesFromConversationState = (cs) => {
+    const out = [];
+    const history = Array.isArray(cs?.history) ? cs.history : [];
+
+    for (const h of history) {
+      if (h?.userInputMessage) {
+        out.push({ role: 'user', content: h.userInputMessage.content ?? '' });
+      } else if (h?.assistantResponseMessage) {
+        out.push({ role: 'assistant', content: h.assistantResponseMessage.content ?? '' });
+      }
+    }
+
+    out.push({
+      role: 'user',
+      content: typeof cs?.currentMessage?.userInputMessage?.content === 'string' ? cs.currentMessage.userInputMessage.content : ''
+    });
+
+    return out;
+  };
+
+  const promptMessages = hasConversationState ? buildPseudoMessagesFromConversationState(rawConversationState) : messages;
+  const inputText = promptMessages.map(m => {
     if (typeof m.content === 'string') return m.content;
     if (Array.isArray(m.content)) {
       return m.content.filter(c => c.type === 'text').map(c => c.text).join('');
@@ -979,18 +1142,16 @@ router.post('/v1/kiro/chat/completions', authenticateApiKey, async (req, res) =>
         }
       });
 
-      await kiroClient.generateResponse(messages, model, (data) => {
+      const onStreamData = (data) => {
         // 如果响应已结束，不再写入数据
-        if (responseEnded) {
-          return;
-        }
-        
+        if (responseEnded) return;
+
         try {
           if (data.type === 'tool_call_start') {
             // OpenAI 流式格式：首次发送工具调用（包含 id, type, function.name）
             hasToolCall = true;
-            const toolCalls = data.tool_calls.map((tc, idx) => ({
-              index: tc.index,  // 使用从 kiro_client 传来的正确索引
+            const toolCalls = data.tool_calls.map((tc) => ({
+              index: tc.index, // 使用从 kiro_client 传来的正确索引
               id: tc.id,
               type: 'function',
               function: {
@@ -1022,8 +1183,8 @@ router.post('/v1/kiro/chat/completions', authenticateApiKey, async (req, res) =>
                 index: 0,
                 delta: {
                   tool_calls: [{
-                    index: data.tool_call_index,  // 使用正确的工具调用索引
-                    id: data.tool_call_id,  // 添加工具调用ID
+                    index: data.tool_call_index, // 使用正确的工具调用索引
+                    id: data.tool_call_id, // 添加工具调用ID
                     function: {
                       arguments: data.delta
                     }
@@ -1061,7 +1222,103 @@ router.post('/v1/kiro/chat/completions', authenticateApiKey, async (req, res) =>
           logger.warn(`Kiro写入响应失败: ${writeError.message}`);
           responseEnded = true;
         }
-      }, req.user.user_id, options, preselectedAccount);
+      };
+
+      // WebSearch: 先走 Kiro MCP，然后把结果喂回模型生成最终回答
+      if (isWebSearchOnly) {
+        const query = extractWebSearchQuery(promptMessages);
+        if (!query) {
+          responseEnded = true;
+          if (keepAliveTimer) {
+            clearInterval(keepAliveTimer);
+            keepAliveTimer = null;
+          }
+          res.write(`data: ${JSON.stringify({
+            id,
+            object: 'chat.completion.chunk',
+            created,
+            model,
+            choices: [{ index: 0, delta: { content: '\n\n错误: 无法从 messages 中提取 web_search query' }, finish_reason: null }]
+          })}\n\n`);
+          res.write(`data: ${JSON.stringify({
+            id,
+            object: 'chat.completion.chunk',
+            created,
+            model,
+            choices: [{ index: 0, delta: {}, finish_reason: 'stop' }]
+          })}\n\n`);
+          res.write('data: [DONE]\n\n');
+          res.end();
+          return;
+        }
+
+        const mcp = await kiroClient.webSearch(query, model, req.user.user_id, preselectedAccount);
+        const question = extractLastUserText(promptMessages);
+        const answerPrompt = buildWebSearchAnswerPrompt(question, mcp.query, mcp.results);
+
+        const effectiveMessages = [
+          ...promptMessages,
+          { role: 'user', content: answerPrompt }
+        ];
+        const effectiveOptions = { ...options, tools: [], tool_choice: 'none' };
+
+        const effectiveInputText = effectiveMessages.map(m => {
+          if (typeof m.content === 'string') return m.content;
+          if (Array.isArray(m.content)) {
+            return m.content.filter(c => c.type === 'text').map(c => c.text).join('');
+          }
+          return '';
+        }).join('\n');
+        const effectivePromptTokens = countStringTokens(effectiveInputText, model);
+
+        await kiroClient.generateResponse(
+          effectiveMessages,
+          model,
+          onStreamData,
+          req.user.user_id,
+          effectiveOptions,
+          preselectedAccount
+        );
+
+        // 如果响应已结束，直接返回
+        if (responseEnded) return;
+
+        // 计算输出token数（包括文本内容和工具调用参数）
+        const completionTokens = countStringTokens(fullContent + toolCallArgs, model);
+        const totalTokens = effectivePromptTokens + completionTokens;
+
+        // 发送带usage的finish chunk
+        try {
+          if (keepAliveTimer) {
+            clearInterval(keepAliveTimer);
+            keepAliveTimer = null;
+          }
+          const finishChunk = {
+            id,
+            object: 'chat.completion.chunk',
+            created,
+            model,
+            choices: [{ index: 0, delta: {}, finish_reason: hasToolCall ? 'tool_calls' : 'stop' }],
+            usage: {
+              prompt_tokens: effectivePromptTokens,
+              completion_tokens: completionTokens,
+              total_tokens: totalTokens
+            }
+          };
+          res.write(`data: ${JSON.stringify(finishChunk)}\n\n`);
+          res.write('data: [DONE]\n\n');
+          res.end();
+        } catch (writeError) {
+          logger.warn(`Kiro写入结束响应失败: ${writeError.message}`);
+        }
+        return;
+      }
+
+      const generate = hasConversationState
+        ? kiroClient.generateResponseWithCwRequest.bind(kiroClient, { conversationState: rawConversationState })
+        : kiroClient.generateResponse.bind(kiroClient, messages);
+
+      await generate(model, onStreamData, req.user.user_id, options, preselectedAccount);
 
       // 如果响应已结束，直接返回
       if (responseEnded) {
@@ -1173,12 +1430,103 @@ router.post('/v1/kiro/chat/completions', authenticateApiKey, async (req, res) =>
   } else {
     // 非流式响应
     try {
+      if (isWebSearchOnly) {
+        const query = extractWebSearchQuery(promptMessages);
+        if (!query) {
+          return res.status(400).json({ error: '无法从 messages 中提取 web_search query' });
+        }
+
+        const accountOverride = await kiroClient.getAvailableAccount(req.user.user_id, [], model);
+        const mcp = await kiroClient.webSearch(query, model, req.user.user_id, accountOverride);
+        const question = extractLastUserText(promptMessages);
+        const answerPrompt = buildWebSearchAnswerPrompt(question, mcp.query, mcp.results);
+
+        const effectiveMessages = [
+          ...promptMessages,
+          { role: 'user', content: answerPrompt }
+        ];
+        const effectiveOptions = { ...options, tools: [], tool_choice: 'none' };
+
+        const effectiveInputText = effectiveMessages.map(m => {
+          if (typeof m.content === 'string') return m.content;
+          if (Array.isArray(m.content)) {
+            return m.content.filter(c => c.type === 'text').map(c => c.text).join('');
+          }
+          return '';
+        }).join('\n');
+        const effectivePromptTokens = countStringTokens(effectiveInputText, model);
+
+        let fullContent = '';
+        let toolCalls = [];
+        let toolCallArgs = '';
+        const toolCallsMap = new Map();
+
+        await kiroClient.generateResponse(effectiveMessages, model, (data) => {
+          if (data.type === 'tool_call_start') {
+            const toolCall = data.tool_calls[0];
+            toolCallsMap.set(toolCall.id, {
+              id: toolCall.id,
+              type: 'function',
+              function: {
+                name: toolCall.function.name,
+                arguments: ''
+              }
+            });
+            toolCallArgs += toolCall.function.name;
+          } else if (data.type === 'tool_call_delta') {
+            const toolCall = toolCallsMap.get(data.tool_call_id);
+            if (toolCall) {
+              toolCall.function.arguments += data.delta || '';
+              toolCallArgs += data.delta || '';
+            }
+          } else if (data.type === 'tool_calls') {
+            toolCalls = data.tool_calls;
+            toolCallArgs += data.tool_calls.map(tc => tc.function?.name + (tc.function?.arguments || '')).join('');
+          } else if (data.type === 'text') {
+            fullContent += data.content;
+          }
+        }, req.user.user_id, effectiveOptions, accountOverride);
+
+        if (toolCallsMap.size > 0) {
+          toolCalls = Array.from(toolCallsMap.values());
+        }
+
+        const completionTokens = countStringTokens(fullContent + toolCallArgs, model);
+        const totalTokens = effectivePromptTokens + completionTokens;
+
+        const message = { role: 'assistant', content: fullContent };
+        if (toolCalls.length > 0) {
+          message.tool_calls = toolCalls;
+        }
+
+        return res.json({
+          id: `chatcmpl-${Date.now()}`,
+          object: 'chat.completion',
+          created: Math.floor(Date.now() / 1000),
+          model,
+          choices: [{
+            index: 0,
+            message,
+            finish_reason: toolCalls.length > 0 ? 'tool_calls' : 'stop'
+          }],
+          usage: {
+            prompt_tokens: effectivePromptTokens,
+            completion_tokens: completionTokens,
+            total_tokens: totalTokens
+          }
+        });
+      }
+
       let fullContent = '';
       let toolCalls = [];
       let toolCallArgs = ''; // 累积工具调用参数用于token计算
       const toolCallsMap = new Map(); // 使用 Map 来跟踪多个工具调用
 
-      await kiroClient.generateResponse(messages, model, (data) => {
+      const generate = hasConversationState
+        ? kiroClient.generateResponseWithCwRequest.bind(kiroClient, { conversationState: rawConversationState })
+        : kiroClient.generateResponse.bind(kiroClient, messages);
+
+      await generate(model, (data) => {
         if (data.type === 'tool_call_start') {
           // 开始新的工具调用
           const toolCall = data.tool_calls[0];

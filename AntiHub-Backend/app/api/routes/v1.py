@@ -21,7 +21,12 @@ from app.services.plugin_api_service import PluginAPIService
 from app.services.kiro_service import KiroService, UpstreamAPIError
 from app.services.codex_service import CodexService
 from app.services.anthropic_adapter import AnthropicAdapter
-from app.services.usage_log_service import UsageLogService, SSEUsageTracker, extract_openai_usage
+from app.services.usage_log_service import (
+    UsageLogService,
+    SSEUsageTracker,
+    extract_openai_usage,
+    extract_openai_usage_details,
+)
 from app.schemas.plugin_api import ChatCompletionRequest
 from app.cache import RedisClient
 from app.utils.openai_responses_compat import (
@@ -264,6 +269,23 @@ async def responses(
                             error_message=tracker.error_message,
                             duration_ms=duration_ms,
                         )
+                        if _account is not None and (
+                            tracker.input_tokens
+                            or tracker.output_tokens
+                            or tracker.cached_tokens
+                            or tracker.total_tokens
+                        ):
+                            account_id = int(getattr(_account, "id", 0) or 0)
+                            if account_id:
+                                uncached_input = max(tracker.input_tokens - tracker.cached_tokens, 0)
+                                await codex_service.record_account_consumed_tokens(
+                                    user_id=current_user.id,
+                                    account_id=account_id,
+                                    input_tokens=uncached_input,
+                                    output_tokens=tracker.output_tokens,
+                                    cached_tokens=tracker.cached_tokens,
+                                    total_tokens=tracker.total_tokens,
+                                )
                         if resp is not None:
                             try:
                                 await resp.aclose()
@@ -285,14 +307,14 @@ async def responses(
                     },
                 )
 
-            resp_obj = await codex_service.execute_codex_responses(
+            resp_obj, account = await codex_service.execute_codex_responses(
                 user_id=current_user.id,
                 request_data=request_json,
                 user_agent=raw_request.headers.get("User-Agent"),
             )
 
             duration_ms = int((time.monotonic() - start_time) * 1000)
-            in_tok, out_tok, total_tok = extract_openai_usage(resp_obj)
+            in_tok, out_tok, total_tok, cached_tok = extract_openai_usage_details(resp_obj)
             await UsageLogService.record(
                 user_id=current_user.id,
                 api_key_id=api_key_id,
@@ -308,6 +330,18 @@ async def responses(
                 status_code=200,
                 duration_ms=duration_ms,
             )
+            if any([in_tok, out_tok, total_tok, cached_tok]):
+                account_id = int(getattr(account, "id", 0) or 0)
+                if account_id:
+                    uncached_input = max(in_tok - cached_tok, 0)
+                    await codex_service.record_account_consumed_tokens(
+                        user_id=current_user.id,
+                        account_id=account_id,
+                        input_tokens=uncached_input,
+                        output_tokens=out_tok,
+                        cached_tokens=cached_tok,
+                        total_tokens=total_tok,
+                    )
             return JSONResponse(content=resp_obj)
 
         if use_kiro and current_user.beta != 1 and getattr(current_user, "trust_level", 0) < 3:

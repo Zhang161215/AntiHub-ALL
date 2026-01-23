@@ -2,7 +2,7 @@ import express from 'express';
 import { Readable } from 'stream';
 import oauthService from '../services/oauth.service.js';
 import accountService from '../services/account.service.js';
-import quotaService from '../services/quota.service.js';
+import quotaService from '../services/quota.service.compat.js';
 import userService from '../services/user.service.js';
 import projectService from '../services/project.service.js';
 import multiAccountClient from '../api/multi_account_client.js';
@@ -1716,6 +1716,139 @@ router.post('/v1/chat/completions', authenticateApiKey, async (req, res) => {
 
     const options = { tools, tool_choice };
 
+    // 模型内置联网（对接 Kiro MCP web_search）
+    const getToolName = (t) => (t?.function?.name || t?.name || '').toString();
+    const isWebSearchOnly =
+      Array.isArray(tools) &&
+      tools.length === 1 &&
+      getToolName(tools[0]).trim().toLowerCase() === 'web_search';
+
+    const extractTextFromContent = (content) => {
+      if (typeof content === 'string') return content;
+      if (Array.isArray(content)) {
+        return content
+          .filter((b) => b && b.type === 'text' && typeof b.text === 'string')
+          .map((b) => b.text)
+          .join('');
+      }
+      return '';
+    };
+
+    const extractWebSearchQuery = (msgs) => {
+      let userMsg = null;
+      if (Array.isArray(msgs)) {
+        for (let i = msgs.length - 1; i >= 0; i--) {
+          const m = msgs[i];
+          if (m && m.role === 'user') {
+            userMsg = m;
+            break;
+          }
+        }
+      }
+
+      const normalize = (raw) => {
+        let q = String(raw || '').trim();
+        if (!q) return null;
+
+        const PREFIX = 'Perform a web search for the query: ';
+        if (q.startsWith(PREFIX)) q = q.slice(PREFIX.length).trim();
+
+        const m = q.match(/^(?:query|关键词|搜索|查询)\s*[:：]\s*(.+)$/i);
+        if (m && m[1]) q = String(m[1]).trim();
+
+        const original = q;
+
+        const stripOnce = (s, prefixes) => {
+          for (const p of prefixes) {
+            if (s.startsWith(p)) return s.slice(p.length);
+          }
+          return s;
+        };
+
+        let changed = true;
+        while (changed) {
+          const before = q;
+          q = q.replace(/^[\s:：,，。.!?？、]+/u, '');
+          q = stripOnce(q, ['箱宝', '请帮我', '可以帮我', '能不能帮我', '帮我', '帮忙', '请你', '麻烦你', '请', '麻烦', '能否', '能不能', '可以']);
+          q = stripOnce(q, ['联网', '上网', '在线']);
+          q = stripOnce(q, ['查一下', '查下', '查一查', '查查', '查询一下', '搜索一下', '搜一下', '搜下', '搜一搜', '查询', '搜索', '检索', '找一下', '找下', '找', '查']);
+          q = q.replace(/^[\s:：,，。.!?？、]+/u, '');
+          changed = q !== before;
+        }
+
+        q = q.trim();
+        if (q.length >= 2) return q;
+        return original.trim() || null;
+      };
+
+      return normalize(extractTextFromContent(userMsg?.content));
+    };
+
+    const extractLastUserText = (msgs) => {
+      if (!Array.isArray(msgs)) return '';
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        const m = msgs[i];
+        if (m && m.role === 'user') return extractTextFromContent(m.content);
+      }
+      return '';
+    };
+
+    const buildWebSearchSummary = (query, results) => {
+      const list = Array.isArray(results?.results) ? results.results : [];
+      let summary = `Here are the search results for \"${query}\":\n\n`;
+
+      if (list.length > 0) {
+        for (let i = 0; i < list.length; i++) {
+          const r = list[i] || {};
+          const title = (r.title || '').toString();
+          const url = (r.url || '').toString();
+          const snippet = r.snippet != null ? String(r.snippet) : '';
+
+          summary += `${i + 1}. **${title}**\n`;
+          if (snippet) {
+            const truncated = snippet.length > 200 ? `${snippet.slice(0, 200)}...` : snippet;
+            summary += `   ${truncated}\n`;
+          }
+          summary += `   Source: ${url}\n\n`;
+        }
+      } else {
+        summary += 'No results found.\n';
+      }
+
+      summary += '\nPlease note that these are web search results and may not be fully accurate or up-to-date.';
+      return summary;
+    };
+
+    // 将搜索结果喂回模型，让模型生成最终回答（而不是直接把结果列表回传给用户）
+    const buildWebSearchAnswerPrompt = (question, query, results) => {
+      const q = String(query || '').trim();
+      const questionText = String(question || '').trim() || q;
+      const list = Array.isArray(results?.results) ? results.results : [];
+
+      const items = list.slice(0, 8).map((r, i) => {
+        const title = (r?.title || '').toString();
+        const url = (r?.url || '').toString();
+        const snippet = r?.snippet != null ? String(r.snippet) : '';
+        const truncated = snippet.length > 400 ? `${snippet.slice(0, 400)}...` : snippet;
+
+        let block = `${i + 1}. ${title}\nSource: ${url}`;
+        if (truncated) block = `${i + 1}. ${title}\n${truncated}\nSource: ${url}`;
+        return block;
+      }).join('\n\n');
+
+      return [
+        '你将获得一组网页搜索结果（可能不完全准确）。请严格基于这些结果回答用户问题，避免编造。',
+        '要求：用与用户问题相同的语言回答；引用具体事实时在句末附上来源链接（URL）；输出最终答案，不要原样复述搜索结果列表。',
+        '',
+        `用户问题：${questionText}`,
+        '',
+        `搜索关键词：${q}`,
+        '',
+        '搜索结果：',
+        items || '(无结果)'
+      ].join('\n');
+    };
+
     if (stream) {
       // 流式响应
       res.setHeader('Content-Type', 'text/event-stream');
@@ -1733,7 +1866,46 @@ router.post('/v1/chat/completions', authenticateApiKey, async (req, res) => {
       });
 
       try {
-        await kiroClient.generateResponse(messages, model, (data) => {
+        let effectiveMessages = messages;
+        let effectiveOptions = options;
+        let accountOverride = null;
+
+        if (isWebSearchOnly) {
+          const query = extractWebSearchQuery(messages);
+          if (!query) {
+            responseEnded = true;
+            res.write(`data: ${JSON.stringify({
+              id,
+              object: 'chat.completion.chunk',
+              created,
+              model,
+              choices: [{ index: 0, delta: { content: '\n\n错误: 无法从 messages 中提取 web_search query' }, finish_reason: null }]
+            })}\n\n`);
+            res.write(`data: ${JSON.stringify({
+              id,
+              object: 'chat.completion.chunk',
+              created,
+              model,
+              choices: [{ index: 0, delta: {}, finish_reason: 'stop' }]
+            })}\n\n`);
+            res.write('data: [DONE]\n\n');
+            res.end();
+            return;
+          }
+
+          accountOverride = await kiroClient.getAvailableAccount(req.user.user_id, [], model);
+          const mcp = await kiroClient.webSearch(query, model, req.user.user_id, accountOverride);
+          const question = extractLastUserText(messages);
+          const answerPrompt = buildWebSearchAnswerPrompt(question, mcp.query, mcp.results);
+
+          effectiveMessages = [
+            ...messages,
+            { role: 'user', content: answerPrompt }
+          ];
+          effectiveOptions = { ...options, tools: [], tool_choice: 'none' };
+        }
+
+        await kiroClient.generateResponse(effectiveMessages, model, (data) => {
           // 如果响应已结束，不再写入数据
           if (responseEnded) {
             return;
@@ -1762,7 +1934,7 @@ router.post('/v1/chat/completions', authenticateApiKey, async (req, res) => {
             logger.warn(`Kiro写入响应失败: ${writeError.message}`);
             responseEnded = true;
           }
-        }, req.user.user_id, options);
+        }, req.user.user_id, effectiveOptions, accountOverride);
 
         // 如果响应已结束，直接返回
         if (responseEnded) {
@@ -1821,6 +1993,52 @@ router.post('/v1/chat/completions', authenticateApiKey, async (req, res) => {
     } else {
       // 非流式响应
       try {
+        if (isWebSearchOnly) {
+          const query = extractWebSearchQuery(messages);
+          if (!query) {
+            return res.status(400).json({ error: '无法从 messages 中提取 web_search query' });
+          }
+
+          const accountOverride = await kiroClient.getAvailableAccount(req.user.user_id, [], model);
+          const mcp = await kiroClient.webSearch(query, model, req.user.user_id, accountOverride);
+          const question = extractLastUserText(messages);
+          const answerPrompt = buildWebSearchAnswerPrompt(question, mcp.query, mcp.results);
+
+          const effectiveMessages = [
+            ...messages,
+            { role: 'user', content: answerPrompt }
+          ];
+          const effectiveOptions = { ...options, tools: [], tool_choice: 'none' };
+
+          let fullContent = '';
+          let toolCalls = [];
+
+          await kiroClient.generateResponse(effectiveMessages, model, (data) => {
+            if (data.type === 'tool_calls') {
+              toolCalls = data.tool_calls;
+            } else {
+              fullContent += data.content;
+            }
+          }, req.user.user_id, effectiveOptions, accountOverride);
+
+          const message = { role: 'assistant', content: fullContent };
+          if (toolCalls.length > 0) {
+            message.tool_calls = toolCalls;
+          }
+
+          return res.json({
+            id: `chatcmpl-${Date.now()}`,
+            object: 'chat.completion',
+            created: Math.floor(Date.now() / 1000),
+            model,
+            choices: [{
+              index: 0,
+              message,
+              finish_reason: toolCalls.length > 0 ? 'tool_calls' : 'stop'
+            }]
+          });
+        }
+
         let fullContent = '';
         let toolCalls = [];
 

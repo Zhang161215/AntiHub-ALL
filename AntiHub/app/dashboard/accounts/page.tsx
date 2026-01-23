@@ -96,6 +96,7 @@ export default function AccountsPage() {
   const [kiroBalances, setKiroBalances] = useState<Record<string, number>>({});
   const [qwenAccounts, setQwenAccounts] = useState<QwenAccount[]>([]);
   const [codexAccounts, setCodexAccounts] = useState<CodexAccount[]>([]);
+  const [codexRefreshErrorById, setCodexRefreshErrorById] = useState<Record<number, string>>({});
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [refreshingCookieId, setRefreshingCookieId] = useState<string | null>(null);
@@ -601,6 +602,12 @@ export default function AccountsPage() {
         try {
           await deleteCodexAccount(accountId);
           setCodexAccounts(codexAccounts.filter((a) => a.account_id !== accountId));
+          setCodexRefreshErrorById((prev) => {
+            if (!(accountId in prev)) return prev;
+            const next = { ...prev };
+            delete next[accountId];
+            return next;
+          });
           toasterRef.current?.show({
             title: '删除成功',
             message: 'Codex账号已删除',
@@ -897,6 +904,12 @@ export default function AccountsPage() {
       setCodexAccounts((prev) => prev.map((a) => (a.account_id === accountId ? { ...a, ...updated } : a)));
       setDetailCodexAccount((prev) => (prev && prev.account_id === accountId ? { ...prev, ...updated } : prev));
       setCodexWhamAccount((prev) => (prev && prev.account_id === accountId ? { ...prev, ...updated } : prev));
+      setCodexRefreshErrorById((prev) => {
+        if (!(accountId in prev)) return prev;
+        const next = { ...prev };
+        delete next[accountId];
+        return next;
+      });
       toasterRef.current?.show({
         title: '刷新成功',
         message: '已从官方刷新额度/限额',
@@ -904,9 +917,11 @@ export default function AccountsPage() {
         position: 'top-right',
       });
     } catch (err) {
+      const message = err instanceof Error ? err.message : '刷新账号信息失败';
+      setCodexRefreshErrorById((prev) => ({ ...prev, [accountId]: message }));
       toasterRef.current?.show({
         title: '刷新失败',
-        message: err instanceof Error ? err.message : '刷新账号信息失败',
+        message,
         variant: 'error',
         position: 'top-right',
       });
@@ -942,9 +957,17 @@ export default function AccountsPage() {
           setCodexAccounts((prev) => prev.map((a) => (a.account_id === accountId ? { ...a, ...updated } : a)));
           setDetailCodexAccount((prev) => (prev && prev.account_id === accountId ? { ...prev, ...updated } : prev));
           setCodexWhamAccount((prev) => (prev && prev.account_id === accountId ? { ...prev, ...updated } : prev));
+          setCodexRefreshErrorById((prev) => {
+            if (!(accountId in prev)) return prev;
+            const next = { ...prev };
+            delete next[accountId];
+            return next;
+          });
         } catch (err) {
           failCount += 1;
           console.warn('刷新 Codex 账号失败:', accountId, err);
+          const message = err instanceof Error ? err.message : '刷新账号信息失败';
+          setCodexRefreshErrorById((prev) => ({ ...prev, [accountId]: message }));
         }
       }
     } finally {
@@ -1147,9 +1170,9 @@ export default function AccountsPage() {
 
   if (isLoading) {
     return (
-      <div className="flex flex-col gap-4 py-4 md:gap-6 md:py-6">
-        <div className="px-4 lg:px-6">
-          <div className="flex items-center justify-center min-h-screen">
+      <div className="flex h-full min-h-0 flex-col gap-4 overflow-hidden py-4 md:gap-6 md:py-6">
+        <div className="flex min-h-0 flex-1 flex-col px-4 lg:px-6">
+          <div className="flex min-h-0 flex-1 items-center justify-center">
             <MorphingSquare message="加载中..." />
           </div>
         </div>
@@ -1158,8 +1181,8 @@ export default function AccountsPage() {
   }
 
   return (
-    <div className="flex flex-col gap-4 py-4 md:gap-6 md:py-6">
-      <div className="px-4 lg:px-6">
+    <div className="flex h-full min-h-0 flex-col gap-4 overflow-hidden py-4 md:gap-6 md:py-6">
+      <div className="flex min-h-0 flex-1 flex-col px-4 lg:px-6">
         {/* 页面标题和操作 */}
         <div className="mb-6">
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
@@ -1245,21 +1268,21 @@ export default function AccountsPage() {
 
         {/* 反重力账号列表 */}
         {activeTab === 'antigravity' && (
-          <Card>
+          <Card className="flex min-h-0 flex-1 flex-col">
             <CardHeader className="text-left">
               <CardTitle className="text-left">Antigravity账号</CardTitle>
               <CardDescription className="text-left">
                 共 {accounts.length} 个账号
               </CardDescription>
             </CardHeader>
-            <CardContent>
+            <CardContent className="flex min-h-0 flex-1 flex-col">
               {accounts.length === 0 ? (
                 <div className="text-center py-12 text-muted-foreground">
                   <p className="text-lg mb-2">暂无Antigravity账号</p>
                   <p className="text-sm">点击“添加账号”按钮添加您的第一个账号</p>
                 </div>
               ) : (
-                <div className="overflow-x-auto -mx-6 px-6 md:mx-0 md:px-0">
+                <div className="flex-1 min-h-0 overflow-auto -mx-6 px-6 md:mx-0 md:px-0">
                   <Table>
                       <TableHeader>
                         <TableRow>
@@ -1395,21 +1418,21 @@ export default function AccountsPage() {
 
         {/* Kiro账号列表 */}
         {activeTab === 'kiro' && (
-          <Card>
+          <Card className="flex min-h-0 flex-1 flex-col">
             <CardHeader className="text-left">
               <CardTitle className="text-left">Kiro账号</CardTitle>
               <CardDescription className="text-left">
                 共 {kiroAccounts.length} 个账号
               </CardDescription>
             </CardHeader>
-            <CardContent>
+            <CardContent className="flex min-h-0 flex-1 flex-col">
               {kiroAccounts.length === 0 ? (
                 <div className="text-center py-12 text-muted-foreground">
                   <p className="text-lg mb-2">暂无Kiro账号</p>
                   <p className="text-sm">点击“添加账号”按钮添加您的第一个Kiro账号</p>
                 </div>
               ) : (
-                <div className="overflow-x-auto -mx-6 px-6 md:mx-0 md:px-0">
+                <div className="flex-1 min-h-0 overflow-auto -mx-6 px-6 md:mx-0 md:px-0">
                   <Table>
                     <TableHeader>
                       <TableRow>
@@ -1498,21 +1521,21 @@ export default function AccountsPage() {
 
         {/* Qwen账号列表 */}
         {activeTab === 'qwen' && (
-          <Card>
+          <Card className="flex min-h-0 flex-1 flex-col">
             <CardHeader className="text-left">
               <CardTitle className="text-left">Qwen账号</CardTitle>
               <CardDescription className="text-left">
                 共 {qwenAccounts.length} 个账号
               </CardDescription>
             </CardHeader>
-            <CardContent>
+            <CardContent className="flex min-h-0 flex-1 flex-col">
               {qwenAccounts.length === 0 ? (
                 <div className="text-center py-12 text-muted-foreground">
                   <p className="text-lg mb-2">暂无Qwen账号</p>
                   <p className="text-sm">点击“添加账号”按钮导入您的第一个Qwen账号</p>
                 </div>
               ) : (
-                <div className="overflow-x-auto -mx-6 px-6 md:mx-0 md:px-0">
+                <div className="flex-1 min-h-0 overflow-auto -mx-6 px-6 md:mx-0 md:px-0">
                   <Table>
                     <TableHeader>
                       <TableRow>
@@ -1607,7 +1630,7 @@ export default function AccountsPage() {
 
         {/* Codex账号列表 */}
         {activeTab === 'codex' && (
-          <Card>
+          <Card className="flex min-h-0 flex-1 flex-col">
             <CardHeader className="text-left">
               <div className="flex items-start justify-between gap-4">
                 <div>
@@ -1638,28 +1661,28 @@ export default function AccountsPage() {
                 </Button>
               </div>
             </CardHeader>
-            <CardContent>
+            <CardContent className="flex min-h-0 flex-1 flex-col">
               {codexAccounts.length === 0 ? (
                 <div className="text-center py-12 text-muted-foreground">
                   <p className="text-lg mb-2">暂无Codex账号</p>
                   <p className="text-sm">点击“添加账号”按钮添加您的第一个Codex账号</p>
                 </div>
               ) : (
-                <div className="overflow-x-auto -mx-6 px-6 md:mx-0 md:px-0">
+                <div className="flex-1 min-h-0 overflow-auto -mx-6 px-6 md:mx-0 md:px-0">
                   <Table>
                     <TableHeader>
                       <TableRow>
                         <TableHead className="min-w-[100px]">账号ID</TableHead>
                         <TableHead className="min-w-[160px]">账号名称</TableHead>
-                        <TableHead className="min-w-[220px]">邮箱</TableHead>
+                        <TableHead className="min-w-[160px]">消耗Token</TableHead>
                         <TableHead className="min-w-[120px]">订阅</TableHead>
-                        <TableHead className="min-w-[120px]">剩余额度</TableHead>
                         <TableHead className="min-w-[80px]">状态</TableHead>
                         <TableHead className="min-w-[120px]">5小时/周剩余</TableHead>
                         <TableHead className="min-w-[180px]">解冻时间</TableHead>
                         <TableHead className="min-w-[180px]">Token过期</TableHead>
                         <TableHead className="min-w-[180px]">添加时间</TableHead>
                         <TableHead className="text-right min-w-[80px]">操作</TableHead>
+                        <TableHead className="min-w-[260px]">信息</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -1671,18 +1694,25 @@ export default function AccountsPage() {
                           <TableCell>
                             {account.account_name || account.email || '未命名'}
                           </TableCell>
-                          <TableCell className="text-sm text-muted-foreground">
-                            {account.email || '-'}
+                          <TableCell className="font-mono text-sm whitespace-nowrap">
+                            {(() => {
+                              const total = account.consumed_total_tokens;
+                              const input = account.consumed_input_tokens ?? 0;
+                              const output = account.consumed_output_tokens ?? 0;
+                              const cached = account.consumed_cached_tokens ?? 0;
+                              const title = `输入 ${input.toLocaleString('zh-CN')} / 输出 ${output.toLocaleString('zh-CN')} / 缓存 ${cached.toLocaleString('zh-CN')}`;
+
+                              return (
+                                <span title={title}>
+                                  {typeof total === 'number' ? total.toLocaleString('zh-CN') : '-'}
+                                </span>
+                              );
+                            })()}
                           </TableCell>
                           <TableCell>
                             <Badge variant="secondary">
                               {account.chatgpt_plan_type || '-'}
                             </Badge>
-                          </TableCell>
-                          <TableCell className="font-mono text-sm whitespace-nowrap">
-                            {account.quota_remaining === null || account.quota_remaining === undefined
-                              ? '-'
-                              : `${Number(account.quota_remaining).toFixed(2)}${account.quota_currency ? ` ${account.quota_currency}` : ''}`}
                           </TableCell>
                           <TableCell>
                             <Badge
@@ -1775,6 +1805,27 @@ export default function AccountsPage() {
                                 </DropdownMenuItem>
                               </DropdownMenuContent>
                             </DropdownMenu>
+                          </TableCell>
+                          <TableCell className="text-sm">
+                            {(() => {
+                              const accountId = account.account_id;
+                              const error = codexRefreshErrorById[accountId];
+                              const isRefreshing = refreshingCodexAccountId === accountId;
+                              const quotaText =
+                                account.quota_remaining === null || account.quota_remaining === undefined
+                                  ? '-'
+                                  : `${Number(account.quota_remaining).toFixed(2)}${account.quota_currency ? ` ${account.quota_currency}` : ''}`;
+                              const infoText = isRefreshing ? '刷新中...' : error || quotaText;
+
+                              return (
+                                <div
+                                  className={`max-w-[260px] truncate ${error ? 'text-red-600' : 'font-mono text-muted-foreground'}`}
+                                  title={infoText}
+                                >
+                                  {infoText}
+                                </div>
+                              );
+                            })()}
                           </TableCell>
                         </TableRow>
                       ))}
@@ -2421,6 +2472,44 @@ export default function AccountsPage() {
                       <p className="text-sm">
                         {detailCodexAccount.token_expires_at
                           ? new Date(detailCodexAccount.token_expires_at).toLocaleString('zh-CN')
+                          : '-'}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-3">
+                  <h3 className="text-sm font-semibold text-muted-foreground">Token 消耗</h3>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">输入Token</Label>
+                      <p className="text-sm font-mono">
+                        {typeof detailCodexAccount.consumed_input_tokens === 'number'
+                          ? detailCodexAccount.consumed_input_tokens.toLocaleString('zh-CN')
+                          : '-'}
+                      </p>
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">输出Token</Label>
+                      <p className="text-sm font-mono">
+                        {typeof detailCodexAccount.consumed_output_tokens === 'number'
+                          ? detailCodexAccount.consumed_output_tokens.toLocaleString('zh-CN')
+                          : '-'}
+                      </p>
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">缓存Token</Label>
+                      <p className="text-sm font-mono">
+                        {typeof detailCodexAccount.consumed_cached_tokens === 'number'
+                          ? detailCodexAccount.consumed_cached_tokens.toLocaleString('zh-CN')
+                          : '-'}
+                      </p>
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">总Token</Label>
+                      <p className="text-sm font-mono">
+                        {typeof detailCodexAccount.consumed_total_tokens === 'number'
+                          ? detailCodexAccount.consumed_total_tokens.toLocaleString('zh-CN')
                           : '-'}
                       </p>
                     </div>
