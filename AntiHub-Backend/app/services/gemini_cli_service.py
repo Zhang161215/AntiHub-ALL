@@ -328,14 +328,26 @@ class GeminiCLIService:
         """
         导入 GeminiCLI 账号凭证 JSON
 
-        格式参考：
-        {
-            "access_token": "...",
-            "refresh_token": "...",
-            "email": "...",
-            "project_id": "...",
-            ...
-        }
+        支持格式：
+        1. 嵌套格式（GeminiCLI 导出）：
+           {
+               "token": {
+                   "access_token": "...",
+                   "refresh_token": "...",
+                   ...
+               },
+               "project_id": "...",
+               "email": "...",
+               ...
+           }
+        2. 扁平格式：
+           {
+               "access_token": "...",
+               "refresh_token": "...",
+               ...
+           }
+
+        导入后立即使用 refresh_token 刷新 access_token
         """
         if is_shared not in (0, 1):
             raise ValueError("is_shared 必须是 0 或 1")
@@ -351,51 +363,120 @@ class GeminiCLIService:
         if not isinstance(payload, dict):
             raise ValueError("credential_json 必须是 JSON object")
 
-        access_token = (payload.get("access_token") or "").strip()
-        refresh_token = (payload.get("refresh_token") or "").strip()
-        email = (payload.get("email") or "").strip() or None
-        project_id = (payload.get("project_id") or "").strip() or None
+        # 支持 token 字段嵌套
+        token_obj = payload.get("token", {})
+        if isinstance(token_obj, dict) and token_obj:
+            # 嵌套格式：提取 token 内的字段到外层
+            nested = token_obj
+        else:
+            # 扁平格式：直接使用 payload
+            nested = payload
 
-        # 解析 token 过期时间
-        token_expires_at = None
-        expires_in = payload.get("expires_in")
-        if isinstance(expires_in, (int, float, str)):
-            try:
-                expires_in_seconds = int(expires_in)
-                if expires_in_seconds > 0:
-                    token_expires_at = _now_utc() + timedelta(seconds=expires_in_seconds)
-            except (ValueError, TypeError):
-                pass
+        access_token = (nested.get("access_token") or "").strip()
+        refresh_token = (nested.get("refresh_token") or "").strip()
+        email = (payload.get("email") or nested.get("email") or "").strip() or None
+        project_id = (payload.get("project_id") or nested.get("project_id") or "").strip() or None
+        token_type = nested.get("token_type", "Bearer")
+        client_id = nested.get("client_id", "").strip()
+        client_secret = nested.get("client_secret", "").strip()
 
-        # 如果没有 expires_in，尝试解析 expires_at/expired 字段
-        if token_expires_at is None:
-            expires_at_str = (
-                payload.get("expires_at")
-                or payload.get("expired")
-                or payload.get("expiry")
-                or ""
+        # 必须有 refresh_token 才能导入和刷新
+        if not refresh_token:
+            raise ValueError("credential_json 缺少 refresh_token（刷新 token 所需）")
+
+        # 如果没有指定 client_id/client_secret，使用 Gemini CLI 官方配置
+        if not client_id:
+            client_id = GOOGLE_CLIENT_ID
+        if not client_secret:
+            client_secret = GOOGLE_CLIENT_SECRET
+
+        now = _now_utc()
+
+        # 立即用 refresh_token 刷新 access_token
+        refreshed = False
+        try:
+            form = {
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "refresh_token": refresh_token,
+                "grant_type": "refresh_token",
+            }
+
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(
+                    GOOGLE_TOKEN_URL,
+                    data=form,
+                    headers={
+                        "Content-Type": "application/x-www-form-urlencoded",
+                        "Accept": "application/json",
+                    },
+                )
+
+            if resp.status_code != 200:
+                raise ValueError(f"token 刷新失败: HTTP {resp.status_code}")
+
+            data = resp.json()
+            if "error" in data:
+                err_desc = data.get("error_description", data.get("error"))
+                raise ValueError(f"刷新 token 时 OAuth 错误: {err_desc}")
+
+            # 使用刷新后的 token
+            access_token = (data.get("access_token") or "").strip()
+            new_refresh_token = (data.get("refresh_token") or refresh_token).strip()
+            token_type = data.get("token_type", "Bearer")
+
+            expires_in = int(data.get("expires_in") or 3600)
+            token_expires_at = now + timedelta(seconds=expires_in)
+            refreshed = True
+
+            logger.info(
+                "gemini_cli import: refreshed token successfully email=%s",
+                email or "unknown",
             )
-            if isinstance(expires_at_str, str):
-                token_expires_at = _parse_iso_datetime(expires_at_str)
-            elif isinstance(expires_at_str, (int, float)):
+
+        except Exception as e:
+            # 刷新失败，但仍然允许导入（使用原始凭证）
+            logger.warning(
+                "gemini_cli import: refresh token failed, using original token email=%s error=%s",
+                email or "unknown",
+                str(e),
+            )
+
+            # 解析原始 token 过期时间
+            token_expires_at = None
+            expires_in = nested.get("expires_in")
+            if isinstance(expires_in, (int, float, str)):
                 try:
-                    # Unix timestamp
-                    token_expires_at = datetime.fromtimestamp(
-                        int(expires_at_str), tz=timezone.utc
-                    )
-                except (ValueError, TypeError, OSError):
+                    expires_in_seconds = int(expires_in)
+                    if expires_in_seconds > 0:
+                        token_expires_at = now + timedelta(seconds=expires_in_seconds)
+                except (ValueError, TypeError):
                     pass
 
-        if not access_token and not refresh_token:
-            raise ValueError(
-                "credential_json 缺少有效凭证字段（access_token/refresh_token）"
-            )
+            if token_expires_at is None:
+                expires_at_str = (
+                    nested.get("expires_at")
+                    or nested.get("expired")
+                    or nested.get("expiry")
+                    or ""
+                )
+                if isinstance(expires_at_str, str):
+                    token_expires_at = _parse_iso_datetime(expires_at_str)
+                elif isinstance(expires_at_str, (int, float)):
+                    try:
+                        token_expires_at = datetime.fromtimestamp(
+                            int(expires_at_str), tz=timezone.utc
+                        )
+                    except (ValueError, TypeError, OSError):
+                        pass
 
-        # 规范化并加密存储
+            new_refresh_token = refresh_token
+
+        # 规范化并加密存储（使用刷新后的凭证）
         normalized = {
             "access_token": access_token,
-            "refresh_token": refresh_token,
-            "token_type": payload.get("token_type", "Bearer"),
+            "refresh_token": new_refresh_token,
+            "token_type": token_type,
             "email": email or "",
             "project_id": project_id or "",
         }
@@ -420,6 +501,7 @@ class GeminiCLIService:
                 email=email,
                 project_id=project_id,
                 token_expires_at=token_expires_at,
+                last_refresh_at=now if refreshed else None,
             )
             account = updated or existing
         else:
@@ -432,6 +514,7 @@ class GeminiCLIService:
                 email=email,
                 project_id=project_id,
                 token_expires_at=token_expires_at,
+                last_refresh_at=now if refreshed else None,
             )
 
         return {"success": True, "data": account}

@@ -31,13 +31,20 @@ import {
   updateCodexAccountName,
   refreshCodexAccount,
   getCodexWhamUsage,
+  getGeminiCLIAccounts,
+  getGeminiCLIAccountCredentials,
+  deleteGeminiCLIAccount,
+  updateGeminiCLIAccountStatus,
+  updateGeminiCLIAccountName,
+  updateGeminiCLIAccountProject,
   type CodexWhamUsageData,
   type Account,
   type AccountProjects,
   type AntigravityAccountDetail,
   type KiroAccount,
   type QwenAccount,
-  type CodexAccount
+  type CodexAccount,
+  type GeminiCLIAccount,
 } from '@/lib/api';
 import { AddAccountDrawer } from '@/components/add-account-drawer';
 import { Button } from '@/components/ui/button';
@@ -78,7 +85,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Tooltip } from '@/components/ui/tooltip-card';
-import { IconCirclePlusFilled, IconDotsVertical, IconRefresh, IconTrash, IconToggleLeft, IconToggleRight, IconExternalLink, IconChartBar, IconEdit, IconAlertTriangle, IconCopy } from '@tabler/icons-react';
+import { IconCirclePlusFilled, IconDotsVertical, IconRefresh, IconTrash, IconToggleLeft, IconToggleRight, IconExternalLink, IconChartBar, IconEdit, IconAlertTriangle, IconCopy, IconInfoCircle } from '@tabler/icons-react';
 import {
   Select,
   SelectContent,
@@ -97,11 +104,12 @@ export default function AccountsPage() {
   const [qwenAccounts, setQwenAccounts] = useState<QwenAccount[]>([]);
   const [codexAccounts, setCodexAccounts] = useState<CodexAccount[]>([]);
   const [codexRefreshErrorById, setCodexRefreshErrorById] = useState<Record<number, string>>({});
+  const [geminiCliAccounts, setGeminiCliAccounts] = useState<GeminiCLIAccount[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [refreshingCookieId, setRefreshingCookieId] = useState<string | null>(null);
   const [refreshingCodexAccountId, setRefreshingCodexAccountId] = useState<number | null>(null);
-  const [activeTab, setActiveTab] = useState<'antigravity' | 'kiro' | 'qwen' | 'codex'>('antigravity');
+  const [activeTab, setActiveTab] = useState<'antigravity' | 'kiro' | 'qwen' | 'codex' | 'gemini'>('antigravity');
 
   // 添加账号 Drawer 状态
   const [isAddDrawerOpen, setIsAddDrawerOpen] = useState(false);
@@ -145,6 +153,12 @@ export default function AccountsPage() {
   const [newCodexAccountName, setNewCodexAccountName] = useState('');
   const [isRenamingCodex, setIsRenamingCodex] = useState(false);
 
+  // 重命名 GeminiCLI 账号 Dialog 状态
+  const [isGeminiCliRenameDialogOpen, setIsGeminiCliRenameDialogOpen] = useState(false);
+  const [renamingGeminiCliAccount, setRenamingGeminiCliAccount] = useState<GeminiCLIAccount | null>(null);
+  const [newGeminiCliAccountName, setNewGeminiCliAccountName] = useState('');
+  const [isRenamingGeminiCli, setIsRenamingGeminiCli] = useState(false);
+
   // Antigravity 账号详情 Dialog 状态
   const [isAntigravityDetailDialogOpen, setIsAntigravityDetailDialogOpen] = useState(false);
   const [antigravityDetail, setAntigravityDetail] = useState<AntigravityAccountDetail | null>(null);
@@ -159,6 +173,10 @@ export default function AccountsPage() {
   // Codex 账号详情 Dialog 状态
   const [isCodexDetailDialogOpen, setIsCodexDetailDialogOpen] = useState(false);
   const [detailCodexAccount, setDetailCodexAccount] = useState<CodexAccount | null>(null);
+
+  // GeminiCLI 账号详情 Dialog 状态
+  const [isGeminiCliDetailDialogOpen, setIsGeminiCliDetailDialogOpen] = useState(false);
+  const [detailGeminiCliAccount, setDetailGeminiCliAccount] = useState<GeminiCLIAccount | null>(null);
 
   // Codex 限额窗口（wham/usage）Dialog 状态
   const [isCodexWhamDialogOpen, setIsCodexWhamDialogOpen] = useState(false);
@@ -233,6 +251,15 @@ export default function AccountsPage() {
       } catch (err) {
         console.log('未加载Codex账号');
         setCodexAccounts([]);
+      }
+
+      // 加载 GeminiCLI 账号
+      try {
+        const geminiCliData = await getGeminiCLIAccounts();
+        setGeminiCliAccounts(geminiCliData);
+      } catch (err) {
+        console.log('未加载GeminiCLI账号');
+        setGeminiCliAccounts([]);
       }
     } catch (err) {
       toasterRef.current?.show({
@@ -709,6 +736,73 @@ export default function AccountsPage() {
     }
   };
 
+  // GeminiCLI 账号处理函数
+  const handleCopyGeminiCLICredentials = async (account: GeminiCLIAccount) => {
+    try {
+      const data = await getGeminiCLIAccountCredentials(account.account_id);
+      await handleCopyJson(data);
+    } catch (err) {
+      toasterRef.current?.show({
+        title: '复制失败',
+        message: err instanceof Error ? err.message : '复制凭证失败',
+        variant: 'error',
+        position: 'top-right',
+      });
+    }
+  };
+
+  const handleDeleteGeminiCLIAccount = (accountId: number) => {
+    showConfirmDialog({
+      title: '删除账号',
+      description: '确定要删除这个 GeminiCLI 账号吗？此操作无法撤销。',
+      confirmText: '删除',
+      cancelText: '取消',
+      variant: 'destructive',
+      onConfirm: async () => {
+        try {
+          await deleteGeminiCLIAccount(accountId);
+          setGeminiCliAccounts(geminiCliAccounts.filter((a) => a.account_id !== accountId));
+          toasterRef.current?.show({
+            title: '删除成功',
+            message: 'GeminiCLI账号已删除',
+            variant: 'success',
+            position: 'top-right',
+          });
+        } catch (err) {
+          toasterRef.current?.show({
+            title: '删除失败',
+            message: err instanceof Error ? err.message : '删除失败',
+            variant: 'error',
+            position: 'top-right',
+          });
+        }
+      },
+    });
+  };
+
+  const handleToggleGeminiCLIStatus = async (account: GeminiCLIAccount) => {
+    try {
+      const newStatus = account.status === 1 ? 0 : 1;
+      const updated = await updateGeminiCLIAccountStatus(account.account_id, newStatus);
+      setGeminiCliAccounts(
+        geminiCliAccounts.map((a) => (a.account_id === account.account_id ? { ...a, ...updated } : a))
+      );
+      toasterRef.current?.show({
+        title: '状态已更新',
+        message: `账号已${newStatus === 1 ? '启用' : '禁用'}`,
+        variant: 'success',
+        position: 'top-right',
+      });
+    } catch (err) {
+      toasterRef.current?.show({
+        title: '更新失败',
+        message: err instanceof Error ? err.message : '更新状态失败',
+        variant: 'error',
+        position: 'top-right',
+      });
+    }
+  };
+
   const handleRenameKiro = (account: KiroAccount) => {
     setRenamingAccount(account);
     setNewAccountName(account.account_name || account.email || '');
@@ -725,6 +819,12 @@ export default function AccountsPage() {
     setRenamingCodexAccount(account);
     setNewCodexAccountName(account.account_name || account.email || '');
     setIsCodexRenameDialogOpen(true);
+  };
+
+  const handleRenameGeminiCLI = (account: GeminiCLIAccount) => {
+    setRenamingGeminiCliAccount(account);
+    setNewGeminiCliAccountName(account.account_name || account.email || '');
+    setIsGeminiCliRenameDialogOpen(true);
   };
 
   const handleRenameAntigravity = (account: Account) => {
@@ -853,6 +953,52 @@ export default function AccountsPage() {
       });
     } finally {
       setIsRenamingCodex(false);
+    }
+  };
+
+  const handleSubmitGeminiCliRename = async () => {
+    if (!renamingGeminiCliAccount) return;
+
+    if (!newGeminiCliAccountName.trim()) {
+      toasterRef.current?.show({
+        title: '输入错误',
+        message: '账号名称不能为空',
+        variant: 'warning',
+        position: 'top-right',
+      });
+      return;
+    }
+
+    setIsRenamingGeminiCli(true);
+    try {
+      const updated = await updateGeminiCLIAccountName(
+        renamingGeminiCliAccount.account_id,
+        newGeminiCliAccountName.trim()
+      );
+      setGeminiCliAccounts(
+        geminiCliAccounts.map((a) =>
+          a.account_id === renamingGeminiCliAccount.account_id ? { ...a, ...updated } : a
+        )
+      );
+      setDetailGeminiCliAccount((prev) =>
+        prev && prev.account_id === renamingGeminiCliAccount.account_id ? { ...prev, ...updated } : prev
+      );
+      setIsGeminiCliRenameDialogOpen(false);
+      toasterRef.current?.show({
+        title: '重命名成功',
+        message: '账号名称已更新',
+        variant: 'success',
+        position: 'top-right',
+      });
+    } catch (err) {
+      toasterRef.current?.show({
+        title: '重命名失败',
+        message: err instanceof Error ? err.message : '更新账号名称失败',
+        variant: 'error',
+        position: 'top-right',
+      });
+    } finally {
+      setIsRenamingGeminiCli(false);
     }
   };
 
@@ -1054,6 +1200,11 @@ export default function AccountsPage() {
     }
   };
 
+  const handleViewGeminiCliDetail = (account: GeminiCLIAccount) => {
+    setDetailGeminiCliAccount(account);
+    setIsGeminiCliDetailDialogOpen(true);
+  };
+
   const handleViewQuotas = async (account: Account) => {
     setCurrentAccount(account);
     setIsQuotaDialogOpen(true);
@@ -1189,7 +1340,7 @@ export default function AccountsPage() {
             <div></div>
             <div className="flex flex-wrap items-center gap-2">
               {/* 账号配置切换下拉菜单 */}
-              <Select value={activeTab} onValueChange={(value: 'antigravity' | 'kiro' | 'qwen' | 'codex') => setActiveTab(value)}>
+              <Select value={activeTab} onValueChange={(value: 'antigravity' | 'kiro' | 'qwen' | 'codex' | 'gemini') => setActiveTab(value)}>
                 <SelectTrigger className="w-[140px] sm:w-[160px] h-9">
                   <SelectValue>
                     {activeTab === 'antigravity' ? (
@@ -1207,6 +1358,11 @@ export default function AccountsPage() {
                       <span className="flex items-center gap-2">
                         <Qwen className="size-4" />
                         Qwen
+                      </span>
+                    ) : activeTab === 'gemini' ? (
+                      <span className="flex items-center gap-2">
+                        <Gemini className="size-4" />
+                        GeminiCLI
                       </span>
                     ) : (
                       <span className="flex items-center gap-2">
@@ -1239,6 +1395,12 @@ export default function AccountsPage() {
                     <span className="flex items-center gap-2">
                       <OpenAI className="size-4" />
                       Codex
+                    </span>
+                  </SelectItem>
+                  <SelectItem value="gemini">
+                    <span className="flex items-center gap-2">
+                      <Gemini className="size-4" />
+                      GeminiCLI
                     </span>
                   </SelectItem>
                 </SelectContent>
@@ -1836,6 +1998,113 @@ export default function AccountsPage() {
             </CardContent>
           </Card>
         )}
+
+        {/* GeminiCLI账号列表 */}
+        {activeTab === 'gemini' && (
+          <Card className="flex min-h-0 flex-1 flex-col">
+            <CardHeader className="text-left">
+              <CardTitle className="text-left">GeminiCLI账号</CardTitle>
+              <CardDescription className="text-left">
+                共 {geminiCliAccounts.length} 个账号
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="flex min-h-0 flex-1 flex-col">
+              {geminiCliAccounts.length === 0 ? (
+                <div className="text-center py-12 text-muted-foreground">
+                  <p className="text-lg mb-2">暂无GeminiCLI账号</p>
+                  <p className="text-sm">点击“添加账号”按钮添加您的第一个GeminiCLI账号</p>
+                </div>
+              ) : (
+                <div className="flex-1 min-h-0 overflow-auto -mx-6 px-6 md:mx-0 md:px-0">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead className="min-w-[100px]">账号ID</TableHead>
+                        <TableHead className="min-w-[160px]">账号名称</TableHead>
+                        <TableHead className="min-w-[200px]">邮箱</TableHead>
+                        <TableHead className="min-w-[180px]">项目ID</TableHead>
+                        <TableHead className="min-w-[80px]">状态</TableHead>
+                        <TableHead className="min-w-[100px]">添加时间</TableHead>
+                        <TableHead className="text-right min-w-[80px]">操作</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {geminiCliAccounts.map((account) => (
+                        <TableRow key={account.account_id}>
+                          <TableCell className="font-mono text-sm">
+                            {account.account_id}
+                          </TableCell>
+                          <TableCell>
+                            {account.account_name || account.email || '未命名'}
+                          </TableCell>
+                          <TableCell className="text-sm text-muted-foreground">
+                            {account.email || '-'}
+                          </TableCell>
+                          <TableCell className="font-mono text-sm">
+                            <div className="max-w-[180px] truncate" title={account.project_id || ''}>
+                              {account.project_id || '-'}
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant={account.status === 1 ? 'default' : 'secondary'}>
+                              {account.status === 1 ? '启用' : '禁用'}
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="text-sm text-muted-foreground whitespace-nowrap">
+                            {account.created_at ? new Date(account.created_at).toLocaleString('zh-CN') : '-'}
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <Button variant="ghost" size="icon">
+                                  <IconDotsVertical className="size-4" />
+                                </Button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="end">
+                                <DropdownMenuItem onClick={() => handleViewGeminiCliDetail(account)}>
+                                  <IconInfoCircle className="size-4 mr-2" />
+                                  账户详情
+                                </DropdownMenuItem>
+                                <DropdownMenuItem onClick={() => handleCopyGeminiCLICredentials(account)}>
+                                  <IconCopy className="size-4 mr-2" />
+                                  复制凭证为JSON
+                                </DropdownMenuItem>
+                                <DropdownMenuItem onClick={() => handleRenameGeminiCLI(account)}>
+                                  <IconEdit className="size-4 mr-2" />
+                                  重命名
+                                </DropdownMenuItem>
+                                <DropdownMenuItem onClick={() => handleToggleGeminiCLIStatus(account)}>
+                                  {account.status === 1 ? (
+                                    <>
+                                      <IconToggleLeft className="size-4 mr-2" />
+                                      禁用
+                                    </>
+                                  ) : (
+                                    <>
+                                      <IconToggleRight className="size-4 mr-2" />
+                                      启用
+                                    </>
+                                  )}
+                                </DropdownMenuItem>
+                                <DropdownMenuItem
+                                  onClick={() => handleDeleteGeminiCLIAccount(account.account_id)}
+                                  className="text-red-600"
+                                >
+                                  <IconTrash className="size-4 mr-2" />
+                                  删除
+                                </DropdownMenuItem>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
       </div>
 
       {/* 添加账号 Drawer */}
@@ -2065,6 +2334,56 @@ export default function AccountsPage() {
               disabled={isRenamingCodex || !newCodexAccountName.trim()}
             >
               {isRenamingCodex ? (
+                <>
+                  <MorphingSquare className="size-4 mr-2" />
+                  保存中...
+                </>
+              ) : (
+                '保存'
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 重命名 GeminiCLI 账号 Dialog */}
+      <Dialog open={isGeminiCliRenameDialogOpen} onOpenChange={setIsGeminiCliRenameDialogOpen}>
+        <DialogContent className="sm:max-w-[425px]">
+          <DialogHeader>
+            <DialogTitle>重命名账号</DialogTitle>
+          </DialogHeader>
+
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label htmlFor="gemini-cli-account-name">新的账号名称</Label>
+              <Input
+                id="gemini-cli-account-name"
+                placeholder="输入账号名称"
+                value={newGeminiCliAccountName}
+                onChange={(e) => setNewGeminiCliAccountName(e.target.value)}
+                maxLength={50}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !isRenamingGeminiCli) {
+                    handleSubmitGeminiCliRename();
+                  }
+                }}
+              />
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setIsGeminiCliRenameDialogOpen(false)}
+              disabled={isRenamingGeminiCli}
+            >
+              取消
+            </Button>
+            <Button
+              onClick={handleSubmitGeminiCliRename}
+              disabled={isRenamingGeminiCli || !newGeminiCliAccountName.trim()}
+            >
+              {isRenamingGeminiCli ? (
                 <>
                   <MorphingSquare className="size-4 mr-2" />
                   保存中...
@@ -2708,6 +3027,141 @@ export default function AccountsPage() {
               variant="outline"
               onClick={() => setIsKiroDetailDialogOpen(false)}
             >
+              关闭
+            </Button>
+          </ResponsiveDialogFooter>
+        </ResponsiveDialogContent>
+      </ResponsiveDialog>
+
+      {/* GeminiCLI 账号详情 - 响应式弹窗 */}
+      <ResponsiveDialog
+        open={isGeminiCliDetailDialogOpen}
+        onOpenChange={(open) => {
+          setIsGeminiCliDetailDialogOpen(open);
+          if (!open) setDetailGeminiCliAccount(null);
+        }}
+        dismissible={false}
+      >
+        <ResponsiveDialogContent className="sm:max-w-[600px] max-h-[90vh] flex flex-col p-0" showHandle={false}>
+          <ResponsiveDialogHeader className="shrink-0 px-4 pt-4 pb-2 border-b">
+            <ResponsiveDialogTitle>账号详细信息</ResponsiveDialogTitle>
+            <ResponsiveDialogDescription className="break-all">
+              {detailGeminiCliAccount ? `账号ID: ${detailGeminiCliAccount.account_id}` : ''}
+            </ResponsiveDialogDescription>
+          </ResponsiveDialogHeader>
+
+          <div className="flex-1 overflow-y-auto px-4 py-4">
+            {detailGeminiCliAccount ? (
+              <div className="space-y-6">
+                <div className="space-y-3">
+                  <h3 className="text-sm font-semibold text-muted-foreground">基本信息</h3>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">账号ID</Label>
+                      <p className="text-sm font-mono break-all">{detailGeminiCliAccount.account_id}</p>
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">账号名称</Label>
+                      <p className="text-sm break-all">{detailGeminiCliAccount.account_name || '未命名'}</p>
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">邮箱</Label>
+                      <p className="text-sm break-all">{detailGeminiCliAccount.email || '-'}</p>
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">状态</Label>
+                      <Badge variant={detailGeminiCliAccount.status === 1 ? 'default' : 'secondary'}>
+                        {detailGeminiCliAccount.status === 1 ? '启用' : '禁用'}
+                      </Badge>
+                    </div>
+                    <div className="space-y-1 col-span-2">
+                      <Label className="text-xs text-muted-foreground">GCP 项目ID</Label>
+                      <p className="text-sm font-mono break-all">
+                        {detailGeminiCliAccount.project_id || '未设置'}
+                      </p>
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">共享账号</Label>
+                      <p className="text-sm">
+                        {detailGeminiCliAccount.is_shared ? '是' : '否'}
+                      </p>
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">自动项目</Label>
+                      <p className="text-sm">
+                        {detailGeminiCliAccount.auto_project ? '是' : '否'}
+                      </p>
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">已检查</Label>
+                      <p className="text-sm">
+                        {detailGeminiCliAccount.checked ? '是' : '否'}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-3">
+                  <h3 className="text-sm font-semibold text-muted-foreground">Token 信息</h3>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">Token 过期时间</Label>
+                      <p className="text-sm">
+                        {detailGeminiCliAccount.token_expires_at
+                          ? new Date(detailGeminiCliAccount.token_expires_at).toLocaleString('zh-CN')
+                          : '-'}
+                      </p>
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">最后刷新时间</Label>
+                      <p className="text-sm">
+                        {detailGeminiCliAccount.last_refresh_at
+                          ? new Date(detailGeminiCliAccount.last_refresh_at).toLocaleString('zh-CN')
+                          : '-'}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-3">
+                  <h3 className="text-sm font-semibold text-muted-foreground">时间信息</h3>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">创建时间</Label>
+                      <p className="text-sm">
+                        {detailGeminiCliAccount.created_at
+                          ? new Date(detailGeminiCliAccount.created_at).toLocaleString('zh-CN')
+                          : '-'}
+                      </p>
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">更新时间</Label>
+                      <p className="text-sm">
+                        {detailGeminiCliAccount.updated_at
+                          ? new Date(detailGeminiCliAccount.updated_at).toLocaleString('zh-CN')
+                          : '-'}
+                      </p>
+                    </div>
+                    <div className="space-y-1 col-span-2">
+                      <Label className="text-xs text-muted-foreground">最后使用时间</Label>
+                      <p className="text-sm">
+                        {detailGeminiCliAccount.last_used_at
+                          ? new Date(detailGeminiCliAccount.last_used_at).toLocaleString('zh-CN')
+                          : '-'}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="text-center py-12 text-muted-foreground">
+                <p className="text-sm">暂无账号详情</p>
+              </div>
+            )}
+          </div>
+
+          <ResponsiveDialogFooter className="shrink-0 px-4 pb-4 pt-2 border-t">
+            <Button variant="outline" onClick={() => setIsGeminiCliDetailDialogOpen(false)}>
               关闭
             </Button>
           </ResponsiveDialogFooter>
