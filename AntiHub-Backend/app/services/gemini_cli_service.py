@@ -33,18 +33,34 @@ from app.utils.encryption import decrypt_api_key as decrypt_secret
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 
-# Gemini CLI 官方 OAuth 配置（固定值，来自 Gemini CLI 官方实现）
-GOOGLE_CLIENT_ID = "77185425430.apps.googleusercontent.com"
-GOOGLE_CLIENT_SECRET = "GOCSPX-1mdrl61j8kmqUqEdCuCD2t1c-Oo"
+# Gemini CLI 官方 OAuth 配置（可用环境变量覆盖，默认值对齐参考项目 CLIProxyAPI）
+# 注意：OAuth client_id/client_secret 只用于“发起 OAuth / 交换 token”，并不会让普通用户越权访问任何内部数据；
+#      真实权限仍由用户账号本身的授权与 GCP 项目侧开关决定。
+GOOGLE_CLIENT_ID = os.getenv(
+    "GEMINI_CLI_OAUTH_CLIENT_ID",
+    "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com",
+)
+GOOGLE_CLIENT_SECRET = os.getenv(
+    "GEMINI_CLI_OAUTH_CLIENT_SECRET",
+    "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",
+)
 
 # OAuth 回调（兼容 CLIProxyAPI 的 8085 端口）
-GOOGLE_REDIRECT_URI = "http://localhost:8085/oauth2callback"
+GOOGLE_REDIRECT_URI = os.getenv(
+    "GEMINI_CLI_OAUTH_REDIRECT_URI",
+    "http://localhost:8085/oauth2callback",
+)
 
 # OAuth Scopes（获取邮箱信息、offline_access 以及支持 onboarding/启用 API 的权限）
 # - openid email profile: 获取用户基本信息
-# - https://www.googleapis.com/auth/cloudplatformprojects: Cloud Resource Manager API（列出项目）
-# - https://www.googleapis.com/auth/service.management: Service Usage API（启用 cloudaicompanion）
-OAUTH_SCOPE = "openid email profile https://www.googleapis.com/auth/cloudplatformprojects https://www.googleapis.com/auth/service.management"
+# - https://www.googleapis.com/auth/cloud-platform: 覆盖列项目/启用 API 所需权限（最少踩坑）
+# - https://www.googleapis.com/auth/userinfo.email / userinfo.profile: 获取邮箱/头像等信息
+OAUTH_SCOPE = os.getenv(
+    "GEMINI_CLI_OAUTH_SCOPE",
+    "https://www.googleapis.com/auth/cloud-platform "
+    "https://www.googleapis.com/auth/userinfo.email "
+    "https://www.googleapis.com/auth/userinfo.profile",
+)
 OAUTH_SESSION_TTL_SECONDS = 10 * 60
 
 # Gemini CLI (cloudcode-pa) API
