@@ -759,7 +759,7 @@ export interface PluginAPIKey {
   user_id: number;
   key_preview: string;
   name: string;
-  config_type: 'antigravity' | 'kiro' | 'qwen' | 'codex'; // 配置类型
+  config_type: 'antigravity' | 'kiro' | 'qwen' | 'codex' | 'gemini-cli'; // 配置类型
   is_active: boolean;
   created_at: string;
   last_used_at: string | null;
@@ -771,7 +771,7 @@ export interface CreateAPIKeyResponse {
   user_id: number;
   key: string;
   name: string;
-  config_type: 'antigravity' | 'kiro' | 'qwen' | 'codex'; // 配置类型
+  config_type: 'antigravity' | 'kiro' | 'qwen' | 'codex' | 'gemini-cli'; // 配置类型
   is_active: boolean;
   created_at: string;
   last_used_at: string | null;
@@ -802,7 +802,7 @@ export async function getAPIKeyInfo(): Promise<PluginAPIKey | null> {
  */
 export async function generateAPIKey(
   name: string = 'My API Key',
-  configType: 'antigravity' | 'kiro' | 'qwen' | 'codex' = 'antigravity'
+  configType: 'antigravity' | 'kiro' | 'qwen' | 'codex' | 'gemini-cli' = 'antigravity'
 ): Promise<CreateAPIKeyResponse> {
   return fetchWithAuth<CreateAPIKeyResponse>(
     `${API_BASE_URL}/api/api-keys`,
@@ -1015,7 +1015,7 @@ export async function getRequestUsageLogs(params?: {
 
 // ==================== 聊天相关 API ====================
 
-export type ApiType = 'antigravity' | 'kiro' | 'qwen' | 'codex';
+export type ApiType = 'antigravity' | 'kiro' | 'qwen' | 'codex' | 'gemini-cli';
 
 export interface OpenAIModel {
   id: string;
@@ -2206,6 +2206,248 @@ export async function updateCodexAccountLimits(
 export async function deleteCodexAccount(accountId: number): Promise<any> {
   const result = await fetchWithAuth<{ success: boolean; data: any }>(
     `${API_BASE_URL}/api/codex/accounts/${accountId}`,
+    { method: 'DELETE' }
+  );
+  return result.data;
+}
+
+// ==================== CodexCLI 兜底服务配置 ====================
+
+export interface CodexFallbackConfig {
+  platform: string;
+  base_url: string | null;
+  has_key: boolean;
+  api_key_masked?: string | null;
+}
+
+export async function getCodexFallbackConfig(): Promise<CodexFallbackConfig> {
+  const result = await fetchWithAuth<{ success: boolean; data: CodexFallbackConfig }>(
+    `${API_BASE_URL}/api/codex/fallback`,
+    { method: 'GET' }
+  );
+  return result.data;
+}
+
+export async function saveCodexFallbackConfig(payload: {
+  base_url: string;
+  api_key?: string | null;
+}): Promise<CodexFallbackConfig> {
+  const result = await fetchWithAuth<{ success: boolean; data: CodexFallbackConfig }>(
+    `${API_BASE_URL}/api/codex/fallback`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({
+        base_url: payload.base_url,
+        api_key: payload.api_key ?? null,
+      }),
+    }
+  );
+  return result.data;
+}
+
+export async function clearCodexFallbackConfig(): Promise<CodexFallbackConfig> {
+  const result = await fetchWithAuth<{ success: boolean; data: CodexFallbackConfig }>(
+    `${API_BASE_URL}/api/codex/fallback`,
+    { method: 'DELETE' }
+  );
+  return result.data;
+}
+
+// ==================== GeminiCLI 账号管理相关 API ====================
+
+export interface GeminiCLIAccount {
+  account_id: number;
+  user_id: number;
+  account_name: string;
+  status: number; // 0=禁用, 1=启用
+  is_shared: number;
+  email?: string | null;
+  project_id?: string | null;
+  auto_project: boolean;
+  checked: boolean;
+  token_expires_at?: string | null;
+  last_refresh_at?: string | null;
+  created_at: string;
+  updated_at: string;
+  last_used_at?: string | null;
+}
+
+export interface GeminiCLIOAuthAuthorizeResponse {
+  auth_url: string;
+  state: string;
+  expires_in: number;
+}
+
+/**
+ * 生成 GeminiCLI OAuth 登录链接
+ */
+export async function getGeminiCLIOAuthAuthorizeUrl(payload: {
+  is_shared?: number;
+  account_name?: string;
+  project_id?: string;
+} = {}): Promise<GeminiCLIOAuthAuthorizeResponse> {
+  const result = await fetchWithAuth<{ success: boolean; data: GeminiCLIOAuthAuthorizeResponse }>(
+    `${API_BASE_URL}/api/gemini-cli/oauth/authorize`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        is_shared: payload.is_shared ?? 0,
+        account_name: payload.account_name,
+        project_id: payload.project_id,
+      }),
+    }
+  );
+  return result.data;
+}
+
+/**
+ * 提交 GeminiCLI OAuth 回调 URL
+ */
+export async function submitGeminiCLIOAuthCallback(callbackUrl: string): Promise<GeminiCLIAccount> {
+  const result = await fetchWithAuth<{ success: boolean; data: GeminiCLIAccount }>(
+    `${API_BASE_URL}/api/gemini-cli/oauth/callback`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ callback_url: callbackUrl }),
+    }
+  );
+  return result.data;
+}
+
+/**
+ * 导入 GeminiCLI 账号凭证 JSON
+ */
+export async function importGeminiCLIAccount(payload: {
+  credential_json: string;
+  is_shared?: number;
+  account_name?: string;
+}): Promise<GeminiCLIAccount> {
+  const result = await fetchWithAuth<{ success: boolean; data: GeminiCLIAccount }>(
+    `${API_BASE_URL}/api/gemini-cli/accounts/import`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        credential_json: payload.credential_json,
+        is_shared: payload.is_shared ?? 0,
+        account_name: payload.account_name,
+      }),
+    }
+  );
+  return result.data;
+}
+
+/**
+ * 获取 GeminiCLI 账号列表
+ */
+export async function getGeminiCLIAccounts(): Promise<GeminiCLIAccount[]> {
+  const result = await fetchWithAuth<{ success: boolean; data: GeminiCLIAccount[] }>(
+    `${API_BASE_URL}/api/gemini-cli/accounts`,
+    { method: 'GET' }
+  );
+  return result.data;
+}
+
+/**
+ * 获取单个 GeminiCLI 账号详情
+ */
+export async function getGeminiCLIAccount(accountId: number): Promise<GeminiCLIAccount> {
+  const result = await fetchWithAuth<{ success: boolean; data: GeminiCLIAccount }>(
+    `${API_BASE_URL}/api/gemini-cli/accounts/${accountId}`,
+    { method: 'GET' }
+  );
+  return result.data;
+}
+
+/**
+ * 导出 GeminiCLI 账号凭证（敏感信息）
+ */
+export async function getGeminiCLIAccountCredentials(accountId: number): Promise<Record<string, any>> {
+  const result = await fetchWithAuth<{ success: boolean; data: Record<string, any> }>(
+    `${API_BASE_URL}/api/gemini-cli/accounts/${accountId}/credentials`,
+    { method: 'GET' }
+  );
+  return result.data;
+}
+
+export interface GeminiCLIQuotaBucket {
+  model_id: string;
+  token_type: string | null;
+  remaining_fraction: number | null;
+  remaining_amount: number | null;
+  reset_time: string | null;
+}
+
+export interface GeminiCLIQuotaData {
+  fetched_at: string;
+  project_id: string;
+  raw: Record<string, any>;
+  buckets: GeminiCLIQuotaBucket[];
+}
+
+/**
+ * 查询 GeminiCLI 账号剩余额度（retrieveUserQuota）
+ */
+export async function getGeminiCLIAccountQuota(
+  accountId: number,
+  projectId?: string
+): Promise<GeminiCLIQuotaData> {
+  const url = `${API_BASE_URL}/api/gemini-cli/accounts/${accountId}/quota${
+    projectId ? `?project_id=${encodeURIComponent(projectId)}` : ''
+  }`;
+  const result = await fetchWithAuth<{ success: boolean; data: GeminiCLIQuotaData }>(url, {
+    method: 'GET',
+  });
+  return result.data;
+}
+
+/**
+ * 更新 GeminiCLI 账号状态
+ */
+export async function updateGeminiCLIAccountStatus(accountId: number, status: number): Promise<GeminiCLIAccount> {
+  const result = await fetchWithAuth<{ success: boolean; data: GeminiCLIAccount }>(
+    `${API_BASE_URL}/api/gemini-cli/accounts/${accountId}/status`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({ status }),
+    }
+  );
+  return result.data;
+}
+
+/**
+ * 更新 GeminiCLI 账号名称
+ */
+export async function updateGeminiCLIAccountName(accountId: number, accountName: string): Promise<GeminiCLIAccount> {
+  const result = await fetchWithAuth<{ success: boolean; data: GeminiCLIAccount }>(
+    `${API_BASE_URL}/api/gemini-cli/accounts/${accountId}/name`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({ account_name: accountName }),
+    }
+  );
+  return result.data;
+}
+
+/**
+ * 更新 GeminiCLI 账号 GCP Project ID
+ */
+export async function updateGeminiCLIAccountProject(accountId: number, projectId: string): Promise<GeminiCLIAccount> {
+  const result = await fetchWithAuth<{ success: boolean; data: GeminiCLIAccount }>(
+    `${API_BASE_URL}/api/gemini-cli/accounts/${accountId}/project`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({ project_id: projectId }),
+    }
+  );
+  return result.data;
+}
+
+/**
+ * 删除 GeminiCLI 账号
+ */
+export async function deleteGeminiCLIAccount(accountId: number): Promise<any> {
+  const result = await fetchWithAuth<{ success: boolean; data: any }>(
+    `${API_BASE_URL}/api/gemini-cli/accounts/${accountId}`,
     { method: 'DELETE' }
   );
   return result.data;

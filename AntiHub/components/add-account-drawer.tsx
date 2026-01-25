@@ -18,6 +18,9 @@ import {
   kiroAwsIdcDeviceAuthorize,
   kiroAwsIdcDeviceStatus,
   importKiroAwsIdcAccount,
+  getGeminiCLIOAuthAuthorizeUrl,
+  submitGeminiCLIOAuthCallback,
+  importGeminiCLIAccount,
 } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Button as StatefulButton } from '@/components/ui/stateful-button';
@@ -32,10 +35,10 @@ import {
   DrawerTitle,
 } from '@/components/ui/drawer';
 import { IconExternalLink, IconCopy, IconX } from '@tabler/icons-react';
-import { OpenAI, Qwen } from '@lobehub/icons';
+import { Gemini, OpenAI, Qwen } from '@lobehub/icons';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
-import Toaster, { ToasterRef } from '@/components/ui/toast';
+import Toaster, { ToasterRef, showToast } from '@/components/ui/toast';
 
 interface AddAccountDrawerProps {
   open: boolean;
@@ -82,7 +85,7 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
   const [step, setStep] = useState<
     'platform' | 'kiro_provider' | 'method' | 'authorize'
   >('platform');
-  const [platform, setPlatform] = useState<'antigravity' | 'kiro' | 'qwen' | 'codex' | ''>('');
+  const [platform, setPlatform] = useState<'antigravity' | 'kiro' | 'qwen' | 'codex' | 'gemini' | ''>('');
   const [kiroProvider, setKiroProvider] = useState<'social' | 'aws_idc' | ''>('');
   const [loginMethod, setLoginMethod] = useState<'manual' | 'refresh_token' | ''>(''); // Antigravity 登录方式
   const [kiroLoginMethod, setKiroLoginMethod] = useState<'oauth' | 'refresh_token' | ''>('');
@@ -91,6 +94,9 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
   >('');
   const [qwenLoginMethod, setQwenLoginMethod] = useState<'oauth' | 'json'>('oauth');
   const [codexLoginMethod, setCodexLoginMethod] = useState<'oauth' | 'json'>('oauth');
+  const [geminiCliLoginMethod, setGeminiCliLoginMethod] = useState<'oauth' | 'json'>('oauth');
+  const [geminiCliCredentialJson, setGeminiCliCredentialJson] = useState('');
+  const [geminiCliAccountName, setGeminiCliAccountName] = useState('');
   const [kiroImportRefreshToken, setKiroImportRefreshToken] = useState('');
   const [kiroImportClientId, setKiroImportClientId] = useState('');
   const [kiroImportClientSecret, setKiroImportClientSecret] = useState('');
@@ -296,6 +302,24 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
         return;
       }
 
+      if (platform === 'gemini') {
+        if (!geminiCliLoginMethod) {
+          toasterRef.current?.show({
+            title: '选择方式',
+            message: '请选择添加方式',
+            variant: 'warning',
+            position: 'top-right',
+          });
+          return;
+        }
+
+        setOauthUrl('');
+        setOauthState('');
+        setCallbackUrl('');
+        setStep('authorize');
+        return;
+      }
+
       if (!loginMethod) {
         toasterRef.current?.show({
           title: '选择登录方式',
@@ -350,6 +374,9 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
         if (platform === 'codex') {
           setCodexLoginMethod('oauth');
         }
+        if (platform === 'gemini') {
+          setGeminiCliLoginMethod('oauth');
+        }
       }
     } else if (step === 'authorize') {
       if (platform === 'kiro' || platform === 'qwen') {
@@ -371,6 +398,9 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
       } else if (platform === 'codex') {
         setStep('method');
         setCodexLoginMethod('oauth');
+      } else if (platform === 'gemini') {
+        setStep('method');
+        setGeminiCliLoginMethod('oauth');
       } else if (platform === 'antigravity') {
         setStep('method');
       } else {
@@ -1383,6 +1413,184 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
     }
   };
 
+  const handleStartGeminiCliOAuth = async () => {
+    try {
+      const accountName = geminiCliAccountName.trim();
+      const result = await getGeminiCLIOAuthAuthorizeUrl({
+        is_shared: 0,
+        account_name: accountName || undefined,
+      });
+
+      setOauthUrl(result.auth_url);
+      setOauthState(result.state);
+      setCountdown(result.expires_in);
+      setCallbackUrl('');
+
+      window.open(result.auth_url, '_blank', 'width=600,height=700');
+    } catch (err) {
+      toasterRef.current?.show({
+        title: '获取授权链接失败',
+        message: err instanceof Error ? err.message : '获取 GeminiCLI 授权链接失败',
+        variant: 'error',
+        position: 'top-right',
+      });
+      throw err;
+    }
+  };
+
+  const handleSubmitGeminiCliCallback = async () => {
+    const url = callbackUrl.trim();
+    if (!url) {
+      (toasterRef.current?.show ?? showToast)({
+        title: '输入错误',
+        message: '请粘贴 callback_url',
+        variant: 'warning',
+        position: 'top-right',
+      });
+      return;
+    }
+
+    try {
+      await submitGeminiCLIOAuthCallback(url);
+
+      (toasterRef.current?.show ?? showToast)({
+        title: '添加成功',
+        message: 'GeminiCLI 账号已添加',
+        variant: 'success',
+        position: 'top-right',
+      });
+
+      window.dispatchEvent(new CustomEvent('accountAdded'));
+      onOpenChange(false);
+      resetState();
+      onSuccess?.();
+    } catch (err) {
+      (toasterRef.current?.show ?? showToast)({
+        title: '添加失败',
+        message: err instanceof Error ? err.message : '提交 GeminiCLI callback 失败',
+        variant: 'error',
+        position: 'top-right',
+      });
+      throw err;
+    }
+  };
+
+  const handleImportGeminiCliAccount = async () => {
+    const credentialJson = geminiCliCredentialJson.replace(/^\uFEFF/, '').trim();
+    if (!credentialJson) {
+      toasterRef.current?.show({
+        title: '输入错误',
+        message: '请粘贴 GeminiCLI credential_json',
+        variant: 'warning',
+        position: 'top-right',
+      });
+      return;
+    }
+
+    let parsed: any;
+    try {
+      parsed = JSON.parse(credentialJson);
+    } catch {
+      toasterRef.current?.show({
+        title: '凭证格式错误',
+        message: '请输入有效的 JSON（支持单个对象或数组）',
+        variant: 'warning',
+        position: 'top-right',
+      });
+      return;
+    }
+
+    if (!parsed || typeof parsed !== 'object') {
+      toasterRef.current?.show({
+        title: '凭证格式错误',
+        message: '请输入有效的 JSON（支持单个对象或数组）',
+        variant: 'warning',
+        position: 'top-right',
+      });
+      return;
+    }
+
+    const isBatch = Array.isArray(parsed);
+    const items: any[] = isBatch ? parsed : [parsed];
+    if (isBatch && items.length === 0) {
+      toasterRef.current?.show({
+        title: '凭证格式错误',
+        message: 'JSON 数组不能为空',
+        variant: 'warning',
+        position: 'top-right',
+      });
+      return;
+    }
+
+    const providedName = geminiCliAccountName.trim();
+    if (isBatch && providedName) {
+      (toasterRef.current?.show ?? showToast)({
+        title: '提示',
+        message: '批量导入会自动命名，已忽略"账号名称"',
+        variant: 'warning',
+        position: 'top-right',
+      });
+    }
+
+    try {
+      let successCount = 0;
+      let failedCount = 0;
+      const errors: string[] = [];
+
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        if (!item || typeof item !== 'object' || Array.isArray(item)) {
+          failedCount++;
+          errors.push(`第 ${i + 1} 个条目不是 JSON 对象`);
+          continue;
+        }
+        try {
+          await importGeminiCLIAccount({
+            credential_json: JSON.stringify(item),
+            account_name: isBatch ? undefined : (providedName || undefined),
+            is_shared: 0,
+          });
+          successCount++;
+        } catch (err) {
+          failedCount++;
+          errors.push(`第 ${i + 1} 个导入失败：${err instanceof Error ? err.message : '未知错误'}`);
+        }
+      }
+
+      if (successCount === 0) {
+        (toasterRef.current?.show ?? showToast)({
+          title: '导入失败',
+          message: errors[0] || '导入 GeminiCLI 账号失败',
+          variant: 'error',
+          position: 'top-right',
+        });
+        return;
+      }
+
+      (toasterRef.current?.show ?? showToast)({
+        title: isBatch ? '批量导入完成' : '导入成功',
+        message: isBatch
+          ? `成功 ${successCount} 个${failedCount ? `，失败 ${failedCount} 个` : ''}`
+          : 'GeminiCLI 账号已添加',
+        variant: failedCount ? 'warning' : 'success',
+        position: 'top-right',
+      });
+
+      window.dispatchEvent(new CustomEvent('accountAdded'));
+      onOpenChange(false);
+      resetState();
+      onSuccess?.();
+    } catch (err) {
+      (toasterRef.current?.show ?? showToast)({
+        title: '导入失败',
+        message: err instanceof Error ? err.message : '导入 GeminiCLI 账号失败',
+        variant: 'error',
+        position: 'top-right',
+      });
+      throw err;
+    }
+  };
+
   const resetState = () => {
     // 清除所有定时器
     if (timerRef.current) {
@@ -1416,6 +1624,8 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
     setQwenAccountName('');
     setCodexCredentialJson('');
     setCodexAccountName('');
+    setGeminiCliCredentialJson('');
+    setGeminiCliAccountName('');
     setOauthUrl('');
     setOauthState('');
     setCallbackUrl('');
@@ -1614,6 +1824,34 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
                     </p>
                   </div>
                 </label>
+
+                <label
+                  className={cn(
+                    "flex items-center gap-3 p-4 border-2 rounded-lg cursor-pointer transition-colors",
+                    platform === 'gemini' ? "border-primary bg-primary/5" : "border-border hover:border-primary/50"
+                  )}
+                >
+                  <input
+                    type="radio"
+                    name="platform"
+                    value="gemini"
+                    checked={platform === 'gemini'}
+                    onChange={(e) => setPlatform(e.target.value as 'gemini')}
+                    className="w-4 h-4"
+                  />
+                  <div className="w-10 h-10 rounded-lg bg-muted flex items-center justify-center">
+                    <Gemini className="size-6 text-foreground" />
+                  </div>
+                  <div className="flex-1">
+                    <div className="flex items-center justify-between">
+                      <h3 className="font-semibold">GeminiCLI</h3>
+                      <Badge variant="secondary">可用</Badge>
+                    </div>
+                    <p className="text-sm text-muted-foreground mt-1">
+                      OAuth 登录 / 凭证 JSON 导入
+                    </p>
+                  </div>
+                </label>
               </div>
             </div>
           )}
@@ -1735,6 +1973,62 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
                     <h3 className="font-semibold">凭证 JSON 导入</h3>
                     <p className="text-sm text-muted-foreground mt-1">
                       适合你已经从 CLIProxyAPI / Codex CLI 导出了 codex-*.json
+                    </p>
+                  </div>
+                </label>
+              </div>
+            </div>
+          )}
+
+          {step === 'method' && platform === 'gemini' && (
+            <div className="space-y-4">
+              <p className="text-sm text-muted-foreground">选择添加方式</p>
+
+              <div className="space-y-3">
+                <label
+                  className={cn(
+                    "flex items-start gap-3 p-4 border-2 rounded-lg cursor-pointer transition-colors",
+                    geminiCliLoginMethod === 'oauth'
+                      ? "border-primary bg-primary/5"
+                      : "border-border hover:border-primary/50"
+                  )}
+                >
+                  <input
+                    type="radio"
+                    name="geminiCliLoginMethod"
+                    value="oauth"
+                    checked={geminiCliLoginMethod === 'oauth'}
+                    onChange={() => setGeminiCliLoginMethod('oauth')}
+                    className="w-4 h-4 mt-1"
+                  />
+                  <div className="flex-1">
+                    <h3 className="font-semibold">OAuth 登录（推荐）</h3>
+                    <p className="text-sm text-muted-foreground mt-1">
+                      打开授权页面，然后粘贴 callback URL 完成落库
+                    </p>
+                  </div>
+                </label>
+
+                <label
+                  className={cn(
+                    "flex items-start gap-3 p-4 border-2 rounded-lg cursor-pointer transition-colors",
+                    geminiCliLoginMethod === 'json'
+                      ? "border-primary bg-primary/5"
+                      : "border-border hover:border-primary/50"
+                  )}
+                >
+                  <input
+                    type="radio"
+                    name="geminiCliLoginMethod"
+                    value="json"
+                    checked={geminiCliLoginMethod === 'json'}
+                    onChange={() => setGeminiCliLoginMethod('json')}
+                    className="w-4 h-4 mt-1"
+                  />
+                  <div className="flex-1">
+                    <h3 className="font-semibold">凭证 JSON 导入</h3>
+                    <p className="text-sm text-muted-foreground mt-1">
+                      适合你已经从 GeminiCLI 导出了 credential.json
                     </p>
                   </div>
                 </label>
@@ -2019,6 +2313,127 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
                         </Label>
                         <Input
                           id="codex-callback-url"
+                          placeholder="粘贴 http://localhost:1455/auth/callback?code=...&state=..."
+                          value={callbackUrl}
+                          onChange={(e) => setCallbackUrl(e.target.value)}
+                          className="font-mono text-sm h-12"
+                        />
+                      </div>
+                    </>
+                  )}
+                </>
+              ) : platform === 'gemini' ? (
+                <>
+                  <div className="space-y-3">
+                    <Label htmlFor="gemini-cli-account-name" className="text-base font-semibold">
+                      账号名称（可选）
+                    </Label>
+                    <Input
+                      id="gemini-cli-account-name"
+                      placeholder="给这个账号起个名字（可不填）"
+                      value={geminiCliAccountName}
+                      onChange={(e) => setGeminiCliAccountName(e.target.value)}
+                      className="h-12"
+                    />
+                    <p className="text-sm text-muted-foreground">
+                      留空会自动命名：邮箱前三位 + account_id 首段（按 account_id + 邮箱 区分，避免覆盖）
+                    </p>
+                  </div>
+
+                  {geminiCliLoginMethod === 'json' ? (
+                    <>
+                      <div className="p-4 bg-yellow-500/10 border border-yellow-500/20 rounded-lg">
+                        <p className="text-xs text-yellow-600 dark:text-yellow-400">
+                          <strong>提示</strong>
+                          <br />
+                          凭证包含敏感 token，请只在可信环境中粘贴，并避免截图/外发。
+                        </p>
+                      </div>
+                      <div className="space-y-3">
+                        <Label htmlFor="gemini-cli-credential-json" className="text-base font-semibold">
+                          credential_json
+                        </Label>
+                        <p className="text-sm text-muted-foreground">
+                          支持批量：粘贴 JSON 数组（例如 <span className="font-mono">{'[{...},{...}]'}</span>）
+                        </p>
+                        <Textarea
+                          id="gemini-cli-credential-json"
+                          placeholder="在此粘贴 GeminiCLI 导出的 credential.json 内容（支持对象/数组）"
+                          value={geminiCliCredentialJson}
+                          onChange={(e) => setGeminiCliCredentialJson(e.target.value)}
+                          className="font-mono text-sm min-h-[220px]"
+                        />
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="space-y-3">
+                        <Label className="text-base font-semibold">OAuth 授权</Label>
+                        <p className="text-sm text-muted-foreground">
+                          点击生成授权链接并打开。登录成功后会跳转到 <span className="font-mono">http://localhost:1455/auth/callback</span>；如果提示无法访问，直接复制地址栏里的 callback URL，粘贴到下方提交即可完成落库。
+                        </p>
+                      </div>
+
+                      <div className="p-4 bg-yellow-500/10 border border-yellow-500/20 rounded-lg">
+                        <p className="text-xs text-yellow-600 dark:text-yellow-400">
+                          <strong>提示</strong>
+                          <br />
+                          state 有效期约 10 分钟，过期请重新生成链接。
+                        </p>
+                      </div>
+
+                      <div className="space-y-3">
+                        <Label className="text-base font-semibold">授权操作</Label>
+
+                        <div className="flex gap-2">
+                          <StatefulButton onClick={handleStartGeminiCliOAuth} className="flex-1 cursor-pointer">
+                            {oauthUrl ? '重新生成并打开' : '生成并打开授权页面'}
+                          </StatefulButton>
+
+                          <Button
+                            onClick={handleOpenOAuthUrl}
+                            variant="outline"
+                            size="lg"
+                            disabled={!oauthUrl}
+                          >
+                            <IconExternalLink className="size-4 mr-2" />
+                            打开
+                          </Button>
+
+                          <Button
+                            onClick={() => {
+                              if (oauthUrl) {
+                                navigator.clipboard.writeText(oauthUrl);
+                                toasterRef.current?.show({
+                                  title: '复制成功',
+                                  message: '授权链接已复制到剪贴板',
+                                  variant: 'success',
+                                  position: 'top-right',
+                                });
+                              }
+                            }}
+                            variant="outline"
+                            size="lg"
+                            disabled={!oauthUrl}
+                          >
+                            <IconCopy className="size-4 mr-2" />
+                            复制
+                          </Button>
+                        </div>
+
+                        {oauthState && (
+                          <p className="text-xs text-muted-foreground">
+                            state：<span className="font-mono">{oauthState}</span>
+                          </p>
+                        )}
+                      </div>
+
+                      <div className="space-y-3">
+                        <Label htmlFor="gemini-cli-callback-url" className="text-base font-semibold">
+                          callback_url
+                        </Label>
+                        <Input
+                          id="gemini-cli-callback-url"
                           placeholder="粘贴 http://localhost:1455/auth/callback?code=...&state=..."
                           value={callbackUrl}
                           onChange={(e) => setCallbackUrl(e.target.value)}
@@ -2814,6 +3229,24 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
                   {isWaitingAuth && countdown > 0 ? '等待授权中...' : '关闭'}
                 </Button>
               )
+            ) : platform === 'gemini' ? (
+              geminiCliLoginMethod === 'json' ? (
+                <StatefulButton
+                  onClick={handleImportGeminiCliAccount}
+                  disabled={!geminiCliCredentialJson.trim()}
+                  className="flex-1 cursor-pointer"
+                >
+                  完成导入
+                </StatefulButton>
+              ) : (
+                <StatefulButton
+                  onClick={handleSubmitGeminiCliCallback}
+                  disabled={!callbackUrl.trim()}
+                  className="flex-1 cursor-pointer"
+                >
+                  完成添加
+                </StatefulButton>
+              )
             ) : platform === 'kiro' ? (
               kiroProvider === 'aws_idc' ? (
                 kiroAwsIdcMethod === 'manual_import' ? (
@@ -2907,6 +3340,7 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
                 platform === 'antigravity' ? !loginMethod :
                 platform === 'codex' ? !codexLoginMethod :
                 platform === 'qwen' ? !qwenLoginMethod :
+                platform === 'gemini' ? !geminiCliLoginMethod :
                 kiroProvider === 'social' ? !kiroLoginMethod :
                 kiroProvider === 'aws_idc' ? !kiroAwsIdcMethod :
                 true
