@@ -601,6 +601,15 @@ export interface ZaiTTSAccount {
   last_used_at?: string | null;
 }
 
+export interface ZaiImageAccount {
+  account_id: number;
+  account_name: string;
+  status: number;
+  created_at?: string | null;
+  updated_at?: string | null;
+  last_used_at?: string | null;
+}
+
 /**
  * 获取账号列表
  */
@@ -821,6 +830,73 @@ export async function deleteZaiTTSAccount(accountId: number): Promise<void> {
 }
 
 /**
+ * ZAI Image 账号管理
+ */
+export async function getZaiImageAccounts(): Promise<ZaiImageAccount[]> {
+  const result = await fetchWithAuth<{ success: boolean; data: ZaiImageAccount[] }>(
+    `${API_BASE_URL}/api/zai-image/accounts`,
+    { method: 'GET' }
+  );
+  return result.data;
+}
+
+export async function createZaiImageAccount(payload: {
+  account_name: string;
+  token: string;
+}): Promise<ZaiImageAccount> {
+  const result = await fetchWithAuth<{ success: boolean; data: ZaiImageAccount }>(
+    `${API_BASE_URL}/api/zai-image/accounts`,
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }
+  );
+  return result.data;
+}
+
+export async function updateZaiImageAccountStatus(accountId: number, status: number): Promise<ZaiImageAccount> {
+  const result = await fetchWithAuth<{ success: boolean; data: ZaiImageAccount }>(
+    `${API_BASE_URL}/api/zai-image/accounts/${accountId}/status`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({ status }),
+    }
+  );
+  return result.data;
+}
+
+export async function updateZaiImageAccountName(accountId: number, accountName: string): Promise<ZaiImageAccount> {
+  const result = await fetchWithAuth<{ success: boolean; data: ZaiImageAccount }>(
+    `${API_BASE_URL}/api/zai-image/accounts/${accountId}/name`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({ account_name: accountName }),
+    }
+  );
+  return result.data;
+}
+
+export async function updateZaiImageAccountCredentials(accountId: number, payload: {
+  token?: string;
+}): Promise<ZaiImageAccount> {
+  const result = await fetchWithAuth<{ success: boolean; data: ZaiImageAccount }>(
+    `${API_BASE_URL}/api/zai-image/accounts/${accountId}/credentials`,
+    {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }
+  );
+  return result.data;
+}
+
+export async function deleteZaiImageAccount(accountId: number): Promise<void> {
+  await fetchWithAuth<{ success: boolean }>(
+    `${API_BASE_URL}/api/zai-image/accounts/${accountId}`,
+    { method: 'DELETE' }
+  );
+}
+
+/**
  * 获取 OAuth 授权 URL
  */
 export async function getOAuthAuthorizeUrl(isShared: number = 0): Promise<{ auth_url: string; state: string; expires_in: number }> {
@@ -841,7 +917,7 @@ export interface PluginAPIKey {
   user_id: number;
   key_preview: string;
   name: string;
-  config_type: 'antigravity' | 'kiro' | 'qwen' | 'codex' | 'gemini-cli' | 'zai-tts'; // 配置类型
+  config_type: 'antigravity' | 'kiro' | 'qwen' | 'codex' | 'gemini-cli' | 'zai-tts' | 'zai-image'; // 配置类型
   is_active: boolean;
   created_at: string;
   last_used_at: string | null;
@@ -853,7 +929,7 @@ export interface CreateAPIKeyResponse {
   user_id: number;
   key: string;
   name: string;
-  config_type: 'antigravity' | 'kiro' | 'qwen' | 'codex' | 'gemini-cli' | 'zai-tts'; // 配置类型
+  config_type: 'antigravity' | 'kiro' | 'qwen' | 'codex' | 'gemini-cli' | 'zai-tts' | 'zai-image'; // 配置类型
   is_active: boolean;
   created_at: string;
   last_used_at: string | null;
@@ -884,7 +960,7 @@ export async function getAPIKeyInfo(): Promise<PluginAPIKey | null> {
  */
 export async function generateAPIKey(
   name: string = 'My API Key',
-  configType: 'antigravity' | 'kiro' | 'qwen' | 'codex' | 'gemini-cli' | 'zai-tts' = 'antigravity'
+  configType: 'antigravity' | 'kiro' | 'qwen' | 'codex' | 'gemini-cli' | 'zai-tts' | 'zai-image' = 'antigravity'
 ): Promise<CreateAPIKeyResponse> {
   return fetchWithAuth<CreateAPIKeyResponse>(
     `${API_BASE_URL}/api/api-keys`,
@@ -981,16 +1057,19 @@ export interface RequestUsageStats {
   input_tokens: number;
   output_tokens: number;
   total_tokens: number;
+  total_quota_consumed: number;
   avg_duration_ms: number;
   by_config_type: Record<string, {
     total_requests: number;
     success_requests: number;
     failed_requests: number;
     total_tokens: number;
+    total_quota_consumed: number;
   }>;
   by_model: Record<string, {
     total_requests: number;
     total_tokens: number;
+    total_quota_consumed: number;
   }>;
 }
 
@@ -1099,7 +1178,7 @@ export async function getRequestUsageLogs(params?: {
 
 // ==================== 聊天相关 API ====================
 
-export type ApiType = 'antigravity' | 'kiro' | 'qwen' | 'codex' | 'gemini-cli' | 'zai-tts';
+export type ApiType = 'antigravity' | 'kiro' | 'qwen' | 'codex' | 'gemini-cli' | 'zai-tts' | 'zai-image';
 
 export interface OpenAIModel {
   id: string;

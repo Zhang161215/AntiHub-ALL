@@ -41,6 +41,11 @@ import {
   updateZaiTTSAccountName,
   updateZaiTTSAccountCredentials,
   deleteZaiTTSAccount,
+  getZaiImageAccounts,
+  updateZaiImageAccountStatus,
+  updateZaiImageAccountName,
+  updateZaiImageAccountCredentials,
+  deleteZaiImageAccount,
   type CodexWhamUsageData,
   type Account,
   type AccountProjects,
@@ -51,6 +56,7 @@ import {
   type GeminiCLIAccount,
   type GeminiCLIQuotaData,
   type ZaiTTSAccount,
+  type ZaiImageAccount,
 } from '@/lib/api';
 import { AddAccountDrawer } from '@/components/add-account-drawer';
 import { Button } from '@/components/ui/button';
@@ -112,11 +118,12 @@ export default function AccountsPage() {
   const [codexRefreshErrorById, setCodexRefreshErrorById] = useState<Record<number, string>>({});
   const [geminiCliAccounts, setGeminiCliAccounts] = useState<GeminiCLIAccount[]>([]);
   const [zaiTtsAccounts, setZaiTtsAccounts] = useState<ZaiTTSAccount[]>([]);
+  const [zaiImageAccounts, setZaiImageAccounts] = useState<ZaiImageAccount[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [refreshingCookieId, setRefreshingCookieId] = useState<string | null>(null);
   const [refreshingCodexAccountId, setRefreshingCodexAccountId] = useState<number | null>(null);
-  const [activeTab, setActiveTab] = useState<'antigravity' | 'kiro' | 'qwen' | 'codex' | 'gemini' | 'zai-tts'>('antigravity');
+  const [activeTab, setActiveTab] = useState<'antigravity' | 'kiro' | 'qwen' | 'codex' | 'gemini' | 'zai-tts' | 'zai-image'>('antigravity');
 
   // 添加账号 Drawer 状态
   const [isAddDrawerOpen, setIsAddDrawerOpen] = useState(false);
@@ -193,6 +200,13 @@ export default function AccountsPage() {
   const [zaiTtsEditToken, setZaiTtsEditToken] = useState('');
   const [zaiTtsEditVoiceId, setZaiTtsEditVoiceId] = useState('system_001');
   const [isUpdatingZaiTts, setIsUpdatingZaiTts] = useState(false);
+
+  // ZAI Image 编辑 Dialog
+  const [isZaiImageEditDialogOpen, setIsZaiImageEditDialogOpen] = useState(false);
+  const [editingZaiImageAccount, setEditingZaiImageAccount] = useState<ZaiImageAccount | null>(null);
+  const [zaiImageEditAccountName, setZaiImageEditAccountName] = useState('');
+  const [zaiImageEditToken, setZaiImageEditToken] = useState('');
+  const [isUpdatingZaiImage, setIsUpdatingZaiImage] = useState(false);
 
   // Codex 限额窗口（wham/usage）Dialog 状态
   const [isCodexWhamDialogOpen, setIsCodexWhamDialogOpen] = useState(false);
@@ -368,6 +382,15 @@ export default function AccountsPage() {
         console.log('未加载ZAI TTS账号');
         setZaiTtsAccounts([]);
       }
+
+      // 加载 ZAI Image 账号
+      try {
+        const zaiImageData = await getZaiImageAccounts();
+        setZaiImageAccounts(zaiImageData);
+      } catch (err) {
+        console.log('未加载ZAI Image账号');
+        setZaiImageAccounts([]);
+      }
     } catch (err) {
       toasterRef.current?.show({
         title: '加载失败',
@@ -380,6 +403,7 @@ export default function AccountsPage() {
       setQwenAccounts([]);
       setCodexAccounts([]);
       setZaiTtsAccounts([]);
+      setZaiImageAccounts([]);
     } finally {
       setIsLoading(false);
       setIsRefreshing(false);
@@ -1049,6 +1073,116 @@ export default function AccountsPage() {
     });
   };
 
+  // ZAI Image 账号处理函数
+  const handleToggleZaiImageStatus = async (account: ZaiImageAccount) => {
+    try {
+      const newStatus = account.status === 1 ? 0 : 1;
+      const updated = await updateZaiImageAccountStatus(account.account_id, newStatus);
+      setZaiImageAccounts(
+        zaiImageAccounts.map((a) => (a.account_id === account.account_id ? { ...a, ...updated } : a))
+      );
+      toasterRef.current?.show({
+        title: '状态已更新',
+        message: `账号已${newStatus === 1 ? '启用' : '禁用'}`,
+        variant: 'success',
+        position: 'top-right',
+      });
+    } catch (err) {
+      toasterRef.current?.show({
+        title: '更新失败',
+        message: err instanceof Error ? err.message : '更新状态失败',
+        variant: 'error',
+        position: 'top-right',
+      });
+    }
+  };
+
+  const handleEditZaiImageAccount = (account: ZaiImageAccount) => {
+    setEditingZaiImageAccount(account);
+    setZaiImageEditAccountName(account.account_name || '');
+    setZaiImageEditToken('');
+    setIsZaiImageEditDialogOpen(true);
+  };
+
+  const handleSubmitZaiImageEdit = async () => {
+    if (!editingZaiImageAccount) return;
+
+    const accountName = zaiImageEditAccountName.trim();
+    const token = zaiImageEditToken.trim();
+
+    if (!accountName) {
+      toasterRef.current?.show({
+        title: '输入错误',
+        message: '账号名称不能为空',
+        variant: 'warning',
+        position: 'top-right',
+      });
+      return;
+    }
+
+    setIsUpdatingZaiImage(true);
+    try {
+      let updated = editingZaiImageAccount;
+      if (accountName !== editingZaiImageAccount.account_name) {
+        updated = await updateZaiImageAccountName(editingZaiImageAccount.account_id, accountName);
+      }
+
+      if (token) {
+        updated = await updateZaiImageAccountCredentials(editingZaiImageAccount.account_id, { token });
+      }
+
+      setZaiImageAccounts(
+        zaiImageAccounts.map((a) => (a.account_id === editingZaiImageAccount.account_id ? { ...a, ...updated } : a))
+      );
+
+      setIsZaiImageEditDialogOpen(false);
+      toasterRef.current?.show({
+        title: '更新成功',
+        message: 'ZAI Image 账号已更新',
+        variant: 'success',
+        position: 'top-right',
+      });
+    } catch (err) {
+      toasterRef.current?.show({
+        title: '更新失败',
+        message: err instanceof Error ? err.message : '更新账号失败',
+        variant: 'error',
+        position: 'top-right',
+      });
+    } finally {
+      setIsUpdatingZaiImage(false);
+    }
+  };
+
+  const handleDeleteZaiImageAccount = (accountId: number) => {
+    showConfirmDialog({
+      title: '删除账号',
+      description: '确定要删除这个 ZAI Image 账号吗？此操作无法撤销。',
+      confirmText: '删除',
+      cancelText: '取消',
+      variant: 'destructive',
+      onConfirm: async () => {
+        try {
+          await deleteZaiImageAccount(accountId);
+          setZaiImageAccounts(zaiImageAccounts.filter((a) => a.account_id !== accountId));
+          toasterRef.current?.show({
+            title: '删除成功',
+            message: 'ZAI Image 账号已删除',
+            variant: 'success',
+            position: 'top-right',
+          });
+        } catch (err) {
+          toasterRef.current?.show({
+            title: '删除失败',
+            message: err instanceof Error ? err.message : '删除失败',
+            variant: 'error',
+            position: 'top-right',
+          });
+        }
+      },
+    });
+  };
+
   const handleRenameKiro = (account: KiroAccount) => {
     setRenamingAccount(account);
     setNewAccountName(account.account_name || account.email || '');
@@ -1534,7 +1668,7 @@ export default function AccountsPage() {
             <div></div>
             <div className="flex flex-wrap items-center gap-2">
               {/* 账号配置切换下拉菜单 */}
-              <Select value={activeTab} onValueChange={(value: 'antigravity' | 'kiro' | 'qwen' | 'codex' | 'gemini' | 'zai-tts') => setActiveTab(value)}>
+              <Select value={activeTab} onValueChange={(value: 'antigravity' | 'kiro' | 'qwen' | 'codex' | 'gemini' | 'zai-tts' | 'zai-image') => setActiveTab(value)}>
                 <SelectTrigger className="w-[140px] sm:w-[160px] h-9">
                   <SelectValue>
                     {activeTab === 'antigravity' ? (
@@ -1557,6 +1691,11 @@ export default function AccountsPage() {
                       <span className="flex items-center gap-2">
                         <OpenAI className="size-4" />
                         ZAI TTS
+                      </span>
+                    ) : activeTab === 'zai-image' ? (
+                      <span className="flex items-center gap-2">
+                        <OpenAI className="size-4" />
+                        ZAI Image
                       </span>
                     ) : activeTab === 'gemini' ? (
                       <span className="flex items-center gap-2">
@@ -1594,6 +1733,12 @@ export default function AccountsPage() {
                     <span className="flex items-center gap-2">
                       <OpenAI className="size-4" />
                       ZAI TTS
+                    </span>
+                  </SelectItem>
+                  <SelectItem value="zai-image">
+                    <span className="flex items-center gap-2">
+                      <OpenAI className="size-4" />
+                      ZAI Image
                     </span>
                   </SelectItem>
                   <SelectItem value="codex">
@@ -2403,6 +2548,99 @@ export default function AccountsPage() {
             </CardContent>
           </Card>
         )}
+
+        {/* ZAI Image 账号列表 */}
+        {activeTab === 'zai-image' && (
+          <Card className="flex min-h-0 flex-1 flex-col">
+            <CardHeader className="text-left">
+              <CardTitle className="text-left">ZAI Image 账号</CardTitle>
+              <CardDescription className="text-left">
+                共 {zaiImageAccounts.length} 个账号
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="flex min-h-0 flex-1 flex-col">
+              {zaiImageAccounts.length === 0 ? (
+                <div className="text-center py-12 text-muted-foreground">
+                  <p className="text-lg mb-2">暂无ZAI Image账号</p>
+                  <p className="text-sm">点击“添加账号”按钮添加您的第一个 ZAI Image 账号</p>
+                </div>
+              ) : (
+                <div className="flex-1 min-h-0 overflow-auto -mx-6 px-6 md:mx-0 md:px-0">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead className="min-w-[100px]">账号ID</TableHead>
+                        <TableHead className="min-w-[220px]">账号名称</TableHead>
+                        <TableHead className="min-w-[80px]">状态</TableHead>
+                        <TableHead className="min-w-[160px]">添加时间</TableHead>
+                        <TableHead className="min-w-[160px]">最后使用</TableHead>
+                        <TableHead className="text-right min-w-[80px]">操作</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {zaiImageAccounts.map((account) => (
+                        <TableRow key={account.account_id}>
+                          <TableCell className="font-mono text-sm">
+                            {account.account_id}
+                          </TableCell>
+                          <TableCell>
+                            {account.account_name || '未命名'}
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant={account.status === 1 ? 'default' : 'secondary'}>
+                              {account.status === 1 ? '启用' : '禁用'}
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="text-sm text-muted-foreground whitespace-nowrap">
+                            {account.created_at ? new Date(account.created_at).toLocaleString('zh-CN') : '-'}
+                          </TableCell>
+                          <TableCell className="text-sm text-muted-foreground whitespace-nowrap">
+                            {account.last_used_at ? new Date(account.last_used_at).toLocaleString('zh-CN') : '-'}
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <Button variant="ghost" size="icon">
+                                  <IconDotsVertical className="size-4" />
+                                </Button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="end">
+                                <DropdownMenuItem onClick={() => handleEditZaiImageAccount(account)}>
+                                  <IconEdit className="size-4 mr-2" />
+                                  编辑配置
+                                </DropdownMenuItem>
+                                <DropdownMenuItem onClick={() => handleToggleZaiImageStatus(account)}>
+                                  {account.status === 1 ? (
+                                    <>
+                                      <IconToggleLeft className="size-4 mr-2" />
+                                      禁用
+                                    </>
+                                  ) : (
+                                    <>
+                                      <IconToggleRight className="size-4 mr-2" />
+                                      启用
+                                    </>
+                                  )}
+                                </DropdownMenuItem>
+                                <DropdownMenuItem
+                                  onClick={() => handleDeleteZaiImageAccount(account.account_id)}
+                                  className="text-red-600"
+                                >
+                                  <IconTrash className="size-4 mr-2" />
+                                  删除
+                                </DropdownMenuItem>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
       </div>
 
       {/* 添加账号 Drawer */}
@@ -2556,6 +2794,55 @@ export default function AccountsPage() {
             </Button>
             <Button onClick={handleSubmitZaiTtsEdit} disabled={isUpdatingZaiTts}>
               {isUpdatingZaiTts ? '保存中...' : '保存'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ZAI Image 编辑 Dialog */}
+      <Dialog
+        open={isZaiImageEditDialogOpen}
+        onOpenChange={(open) => {
+          setIsZaiImageEditDialogOpen(open);
+          if (!open) {
+            setEditingZaiImageAccount(null);
+            setZaiImageEditAccountName('');
+            setZaiImageEditToken('');
+            setIsUpdatingZaiImage(false);
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-[520px]">
+          <DialogHeader>
+            <DialogTitle>编辑 ZAI Image 账号</DialogTitle>
+            <DialogDescription>
+              {editingZaiImageAccount ? `账号ID: ${editingZaiImageAccount.account_id}` : ''}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4 py-2">
+            <div className="grid gap-2">
+              <Label htmlFor="zai-image-edit-name">账号名称</Label>
+              <Input
+                id="zai-image-edit-name"
+                value={zaiImageEditAccountName}
+                onChange={(e) => setZaiImageEditAccountName(e.target.value)}
+              />
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="zai-image-edit-token">ZAI_TOKEN（留空不修改）</Label>
+              <Input
+                id="zai-image-edit-token"
+                value={zaiImageEditToken}
+                onChange={(e) => setZaiImageEditToken(e.target.value)}
+              />
+            </div>
+          </div>
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setIsZaiImageEditDialogOpen(false)}>
+              取消
+            </Button>
+            <Button onClick={handleSubmitZaiImageEdit} disabled={isUpdatingZaiImage}>
+              {isUpdatingZaiImage ? '保存中...' : '保存'}
             </Button>
           </DialogFooter>
         </DialogContent>

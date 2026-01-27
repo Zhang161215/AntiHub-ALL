@@ -22,6 +22,7 @@ import {
   submitGeminiCLIOAuthCallback,
   importGeminiCLIAccount,
   createZaiTTSAccount,
+  createZaiImageAccount,
 } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Button as StatefulButton } from '@/components/ui/stateful-button';
@@ -86,7 +87,7 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
   const [step, setStep] = useState<
     'platform' | 'kiro_provider' | 'method' | 'authorize'
   >('platform');
-  const [platform, setPlatform] = useState<'antigravity' | 'kiro' | 'qwen' | 'codex' | 'gemini' | 'zai-tts' | ''>('');
+  const [platform, setPlatform] = useState<'antigravity' | 'kiro' | 'qwen' | 'codex' | 'gemini' | 'zai-tts' | 'zai-image' | ''>('');
   const [kiroProvider, setKiroProvider] = useState<'social' | 'aws_idc' | ''>('');
   const [loginMethod, setLoginMethod] = useState<'manual' | 'refresh_token' | ''>(''); // Antigravity 登录方式
   const [kiroLoginMethod, setKiroLoginMethod] = useState<'oauth' | 'refresh_token' | ''>('');
@@ -111,6 +112,8 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
   const [zaiTtsUserId, setZaiTtsUserId] = useState('');
   const [zaiTtsToken, setZaiTtsToken] = useState('');
   const [zaiTtsVoiceId, setZaiTtsVoiceId] = useState('system_001');
+  const [zaiImageAccountName, setZaiImageAccountName] = useState('');
+  const [zaiImageToken, setZaiImageToken] = useState('');
   const [oauthUrl, setOauthUrl] = useState('');
   const [oauthState, setOauthState] = useState(''); // Kiro OAuth state
   const [callbackUrl, setCallbackUrl] = useState('');
@@ -206,7 +209,7 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
         });
         return;
       }
-      if (platform === 'zai-tts') {
+      if (platform === 'zai-tts' || platform === 'zai-image') {
         setStep('authorize');
         return;
       }
@@ -405,7 +408,7 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
       if (platform === 'qwen') {
         setStep('method');
         setQwenLoginMethod('oauth');
-      } else if (platform === 'zai-tts') {
+      } else if (platform === 'zai-tts' || platform === 'zai-image') {
         setStep('platform');
       } else if (platform === 'codex') {
         setStep('method');
@@ -1640,6 +1643,48 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
     }
   };
 
+  const handleCreateZaiImageAccount = async () => {
+    const accountName = zaiImageAccountName.trim();
+    const token = zaiImageToken.trim();
+
+    if (!token) {
+      (toasterRef.current?.show ?? showToast)({
+        title: '输入错误',
+        message: '请填写 ZAI_TOKEN',
+        variant: 'warning',
+        position: 'top-right',
+      });
+      return;
+    }
+
+    try {
+      await createZaiImageAccount({
+        account_name: accountName,
+        token,
+      });
+
+      (toasterRef.current?.show ?? showToast)({
+        title: '添加成功',
+        message: 'ZAI Image 账号已添加',
+        variant: 'success',
+        position: 'top-right',
+      });
+
+      window.dispatchEvent(new CustomEvent('accountAdded'));
+      onOpenChange(false);
+      resetState();
+      onSuccess?.();
+    } catch (err) {
+      (toasterRef.current?.show ?? showToast)({
+        title: '添加失败',
+        message: err instanceof Error ? err.message : '添加 ZAI Image 账号失败',
+        variant: 'error',
+        position: 'top-right',
+      });
+      throw err;
+    }
+  };
+
   const resetState = () => {
     // 清除所有定时器
     if (timerRef.current) {
@@ -1677,6 +1722,8 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
     setZaiTtsUserId('');
     setZaiTtsToken('');
     setZaiTtsVoiceId('system_001');
+    setZaiImageAccountName('');
+    setZaiImageToken('');
     setGeminiCliCredentialJson('');
     setKiroAwsIdcRegion('us-east-1');
     setOauthUrl('');
@@ -1930,6 +1977,34 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
                     </div>
                     <p className="text-sm text-muted-foreground mt-1">
                       账号 + Token + 音色ID
+                    </p>
+                  </div>
+                </label>
+
+                <label
+                  className={cn(
+                    "flex items-center gap-3 p-4 border-2 rounded-lg cursor-pointer transition-colors",
+                    platform === 'zai-image' ? "border-primary bg-primary/5" : "border-border hover:border-primary/50"
+                  )}
+                >
+                  <input
+                    type="radio"
+                    name="platform"
+                    value="zai-image"
+                    checked={platform === 'zai-image'}
+                    onChange={(e) => setPlatform(e.target.value as 'zai-image')}
+                    className="w-4 h-4"
+                  />
+                  <div className="w-10 h-10 rounded-lg bg-muted flex items-center justify-center">
+                    <OpenAI className="size-6 text-foreground" />
+                  </div>
+                  <div className="flex-1">
+                    <div className="flex items-center justify-between">
+                      <h3 className="font-semibold">ZAI Image</h3>
+                      <Badge variant="secondary">可用</Badge>
+                    </div>
+                    <p className="text-sm text-muted-foreground mt-1">
+                      Token（Cookie session）
                     </p>
                   </div>
                 </label>
@@ -2336,6 +2411,37 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
                     />
                     <p className="text-sm text-muted-foreground">
                       默认使用系统自带音色：system_001
+                    </p>
+                  </div>
+                </>
+              ) : platform === 'zai-image' ? (
+                <>
+                  <div className="space-y-3">
+                    <Label htmlFor="zai-image-account-name" className="text-base font-semibold">
+                      账号名称（可选）
+                    </Label>
+                    <Input
+                      id="zai-image-account-name"
+                      placeholder="给这个账号起个名字（可不填）"
+                      value={zaiImageAccountName}
+                      onChange={(e) => setZaiImageAccountName(e.target.value)}
+                      className="h-12"
+                    />
+                  </div>
+
+                  <div className="space-y-3">
+                    <Label htmlFor="zai-image-token" className="text-base font-semibold">
+                      ZAI_TOKEN
+                    </Label>
+                    <Input
+                      id="zai-image-token"
+                      placeholder="session=..."
+                      value={zaiImageToken}
+                      onChange={(e) => setZaiImageToken(e.target.value)}
+                      className="font-mono text-sm h-12"
+                    />
+                    <p className="text-sm text-muted-foreground">
+                      来自 image.z.ai 的 Cookie session
                     </p>
                   </div>
                 </>
@@ -3353,6 +3459,14 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
               <StatefulButton
                 onClick={handleCreateZaiTtsAccount}
                 disabled={!zaiTtsUserId.trim() || !zaiTtsToken.trim() || !zaiTtsVoiceId.trim()}
+                className="flex-1 cursor-pointer"
+              >
+                完成添加
+              </StatefulButton>
+            ) : platform === 'zai-image' ? (
+              <StatefulButton
+                onClick={handleCreateZaiImageAccount}
+                disabled={!zaiImageToken.trim()}
                 className="flex-1 cursor-pointer"
               >
                 完成添加

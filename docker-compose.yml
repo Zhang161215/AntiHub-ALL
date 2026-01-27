@@ -49,6 +49,9 @@ services:
       ZAI_TTS_FILE_KEEP_COUNT: ${ZAI_TTS_FILE_KEEP_COUNT:-10}
 
       # 管理员账号配置（首次启动时自动创建）
+      # ZAI Image (optional)
+      ZAI_IMAGE_BASE_URL: ${ZAI_IMAGE_BASE_URL:-https://image.z.ai}
+
       ADMIN_USERNAME: ${ADMIN_USERNAME:-}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
 

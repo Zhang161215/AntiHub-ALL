@@ -5,10 +5,11 @@ OpenAI兼容的API端点
 用户通过我们的key/token调用，我们再用plug-in key调用plug-in-api
 """
 import asyncio
+import base64
 import json
 import logging
 import os
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 import time
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, status, Request
@@ -23,6 +24,7 @@ from app.services.kiro_service import KiroService, UpstreamAPIError
 from app.services.codex_service import CodexService
 from app.services.gemini_cli_api_service import GeminiCLIAPIService
 from app.services.zai_tts_service import ZaiTTSService
+from app.services.zai_image_service import ZaiImageService
 from app.services.anthropic_adapter import AnthropicAdapter
 from app.services.usage_log_service import (
     UsageLogService,
@@ -69,6 +71,80 @@ def _responses_sse_error(
     data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     return f"event: error\ndata: {data}\n\n".encode("utf-8")
 
+
+LOCAL_IMAGE_MODEL_ID = "glm-image"
+
+
+def _inject_local_models(payload: Any) -> Any:
+    """
+    在 OpenAI /v1/models 的返回里追加本地虚拟模型（例如 glm-image）。
+    只在 payload 符合 OpenAI models list 格式时注入。
+    """
+    if not isinstance(payload, dict):
+        return payload
+    data = payload.get("data")
+    if not isinstance(data, list):
+        return payload
+
+    exists = False
+    for item in data:
+        if isinstance(item, dict) and str(item.get("id") or "").strip() == LOCAL_IMAGE_MODEL_ID:
+            exists = True
+            break
+
+    if not exists:
+        data.append(
+            {
+                "id": LOCAL_IMAGE_MODEL_ID,
+                "object": "model",
+                "created": int(time.time()),
+                "owned_by": "antihub",
+            }
+        )
+        payload["data"] = data
+        payload.setdefault("object", "list")
+
+    return payload
+
+
+ZAI_IMAGE_RATIO_OPTIONS: Dict[str, float] = {
+    "1:1": 1.0,
+    "4:3": 4 / 3,
+    "3:2": 3 / 2,
+    "3:4": 3 / 4,
+    "1:4": 1 / 4,
+    "16:9": 16 / 9,
+    "9:16": 9 / 16,
+    "1:9": 1 / 9,
+    "21:9": 21 / 9,
+}
+
+
+def _openai_size_to_zai_image_config(size: Any) -> Tuple[str, str]:
+    """
+    OpenAI images: size="1024x1024" -> ZAI: ratio + resolution
+    """
+    raw = str(size or "").strip().lower()
+    if "x" not in raw:
+        return "1:1", "1K"
+
+    try:
+        w_s, h_s = raw.split("x", 1)
+        w = int(w_s)
+        h = int(h_s)
+    except Exception:
+        return "1:1", "1K"
+
+    if w <= 0 or h <= 0:
+        return "1:1", "1K"
+
+    ratio_value = float(w) / float(h)
+    ratio = min(ZAI_IMAGE_RATIO_OPTIONS.keys(), key=lambda k: abs(ZAI_IMAGE_RATIO_OPTIONS[k] - ratio_value))
+
+    max_side = max(w, h)
+    resolution = "2K" if max_side > 1024 else "1K"
+    return ratio, resolution
+
 def get_kiro_service(
     db: AsyncSession = Depends(get_db_session),
     redis: RedisClient = Depends(get_redis)
@@ -95,6 +171,12 @@ def get_zai_tts_service(
     db: AsyncSession = Depends(get_db_session),
 ) -> ZaiTTSService:
     return ZaiTTSService(db)
+
+
+def get_zai_image_service(
+    db: AsyncSession = Depends(get_db_session),
+) -> ZaiImageService:
+    return ZaiImageService(db)
 
 
 @router.get(
@@ -134,7 +216,9 @@ async def list_models(
         use_codex = config_type == "codex"
         use_gemini_cli = config_type == "gemini-cli"
         
-        if use_codex:
+        if config_type == "zai-image":
+            result = {"object": "list", "data": []}
+        elif use_codex:
             result = await codex_service.openai_list_models()
         elif use_gemini_cli:
             result = await gemini_cli_service.openai_list_models(user_id=current_user.id)
@@ -150,7 +234,7 @@ async def list_models(
             # 默认使用Antigravity，传递config_type
             result = await antigravity_service.get_models(current_user.id, config_type=config_type)
         
-        return result
+        return _inject_local_models(result)
     except HTTPException:
         raise
     except UpstreamAPIError as e:
@@ -307,6 +391,122 @@ async def audio_speech(
         )
     except Exception as e:
         await _record_usage(False, 500, str(e), tts_voice_id=resolved_voice_id, tts_account_id=account.zai_user_id)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
+
+@router.post(
+    "/images/generations",
+    summary="图片生成（OpenAI 兼容）",
+    description="ZAI Image 接入的 /v1/images/generations 兼容端点（model=glm-image）",
+)
+async def image_generations(
+    raw_request: Request,
+    current_user: User = Depends(get_user_flexible),
+    zai_image_service: ZaiImageService = Depends(get_zai_image_service),
+):
+    start_time = time.monotonic()
+    endpoint = raw_request.url.path
+    method = raw_request.method
+    api_key_id = getattr(current_user, "_api_key_id", None)
+
+    async def _record_usage(
+        success: bool,
+        status_code: Optional[int],
+        error_message: Optional[str] = None,
+        *,
+        quota_consumed: float = 0.0,
+    ):
+        duration_ms = int((time.monotonic() - start_time) * 1000)
+        await UsageLogService.record(
+            user_id=current_user.id,
+            api_key_id=api_key_id,
+            endpoint=endpoint,
+            method=method,
+            model_name=LOCAL_IMAGE_MODEL_ID,
+            config_type="zai-image",
+            stream=False,
+            quota_consumed=quota_consumed,
+            input_tokens=0,
+            output_tokens=0,
+            total_tokens=0,
+            success=success,
+            status_code=status_code,
+            error_message=error_message,
+            duration_ms=duration_ms,
+        )
+
+    try:
+        request_json = await raw_request.json()
+    except Exception:
+        await _record_usage(False, status.HTTP_400_BAD_REQUEST, "Invalid JSON request body")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid JSON request body")
+
+    if not isinstance(request_json, dict):
+        await _record_usage(False, status.HTTP_400_BAD_REQUEST, "Request body must be a JSON object")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Request body must be a JSON object")
+
+    prompt = str(request_json.get("prompt") or "").strip()
+    if not prompt:
+        await _record_usage(False, status.HTTP_400_BAD_REQUEST, "prompt is required")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="prompt is required")
+
+    model_name = str(request_json.get("model") or "").strip() or LOCAL_IMAGE_MODEL_ID
+    if model_name != LOCAL_IMAGE_MODEL_ID:
+        await _record_usage(False, status.HTTP_400_BAD_REQUEST, f"Only model {LOCAL_IMAGE_MODEL_ID} is supported")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Only model {LOCAL_IMAGE_MODEL_ID} is supported",
+        )
+
+    response_format = str(request_json.get("response_format") or "url").strip() or "url"
+    if response_format not in ("url", "b64_json"):
+        await _record_usage(False, status.HTTP_400_BAD_REQUEST, "response_format must be url or b64_json")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="response_format must be url or b64_json",
+        )
+
+    n_raw = request_json.get("n", 1)
+    try:
+        n = int(n_raw)
+    except Exception:
+        n = 1
+    if n < 1 or n > 4:
+        await _record_usage(False, status.HTTP_400_BAD_REQUEST, "n must be between 1 and 4")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="n must be between 1 and 4")
+
+    size = str(request_json.get("size") or "1024x1024").strip()
+    ratio, resolution = _openai_size_to_zai_image_config(size)
+
+    try:
+        account = await zai_image_service.select_active_account(current_user.id)
+        data_items: list[dict] = []
+
+        for _ in range(n):
+            info = await zai_image_service.generate_image(
+                account=account,
+                prompt=prompt,
+                ratio=ratio,
+                resolution=resolution,
+                rm_label_watermark=True,
+            )
+            if response_format == "b64_json":
+                b64, _mime = await zai_image_service.fetch_image_base64(info["image_url"])
+                data_items.append({"b64_json": b64})
+            else:
+                data_items.append({"url": info["image_url"]})
+
+        await _record_usage(True, 200, None, quota_consumed=float(n))
+        return {"created": int(time.time()), "data": data_items}
+
+    except HTTPException as e:
+        await _record_usage(False, e.status_code, str(getattr(e, "detail", e)))
+        raise
+    except ValueError as e:
+        await _record_usage(False, status.HTTP_400_BAD_REQUEST, str(e))
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except Exception as e:
+        await _record_usage(False, 500, str(e))
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 

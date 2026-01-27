@@ -65,6 +65,16 @@ class Settings(BaseSettings):
     )
 
     # 管理员账号配置（可选，用于首次初始化）
+    # ZAI Image 配置
+    zai_image_base_url: str = Field(
+        default="https://image.z.ai",
+        description="ZAI Image 上游基础URL",
+    )
+    zai_image_user_agent: str = Field(
+        default="Mozilla/5.0 AppleWebKit/537.36 Chrome/143 Safari/537",
+        description="ZAI Image 请求 User-Agent",
+    )
+
     admin_username: Optional[str] = Field(
         default=None,
         description="管理员用户名（首次启动时自动创建）"
