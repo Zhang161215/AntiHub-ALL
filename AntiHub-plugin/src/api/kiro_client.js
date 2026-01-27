@@ -176,6 +176,20 @@ class KiroClient {
     }
 
     const payload = { ...cwRequest };
+
+    // Kiro: toolSpecification.description 不能为空，否则会 400
+    try {
+      const tools =
+        payload?.conversationState?.currentMessage?.userInputMessage?.userInputMessageContext?.tools;
+      if (Array.isArray(tools)) {
+        for (const t of tools) {
+          const spec = t?.toolSpecification || t?.tool_specification;
+          if (spec && (spec.description == null || String(spec.description).trim() === '')) {
+            spec.description = '当前工具无说明';
+          }
+        }
+      }
+    } catch {}
     if (typeof account.profile_arn === 'string' && account.profile_arn.trim()) {
       payload.profileArn = account.profile_arn.trim();
     }

@@ -225,7 +225,10 @@ class KiroAnthropicConverter:
             if not name:
                 continue
 
-            desc = str(getattr(t, "description", "") or "")
+            desc = str(getattr(t, "description", "") or "").strip()
+            if not desc:
+                # Kiro upstream 会校验 tool.description 不能为空；为空会直接 400
+                desc = "当前工具无说明"
             if len(desc) > 10000:
                 desc = desc[:10000]
 

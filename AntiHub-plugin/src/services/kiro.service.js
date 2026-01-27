@@ -1111,11 +1111,19 @@ class KiroService {
       return schema;
     };
 
+    const ensureNonEmptyDescription = (value) => {
+      const text = value == null ? '' : String(value);
+      const trimmed = text.trim();
+      return trimmed || '当前工具无说明';
+    };
+
+    if (!Array.isArray(tools)) return [];
+
     return tools.map(t => ({
       toolSpecification: {
-        name: t.function?.name || t.name,
-        description: t.function?.description || t.description || '',
-        inputSchema: { json: ensureObjectSchema(t.function?.parameters || t.input_schema) }
+        name: t?.function?.name || t?.name,
+        description: ensureNonEmptyDescription(t?.function?.description ?? t?.description),
+        inputSchema: { json: ensureObjectSchema(t?.function?.parameters || t?.input_schema) }
       }
     }));
   }
