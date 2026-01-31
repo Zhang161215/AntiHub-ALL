@@ -154,12 +154,12 @@ Anthropic 端点在选择 `config_type` 时：
 ### 现状
 仅凭仓库静态代码无法 100% 还原你的现象，但我能把“最可能的两个根因”钉死到可验证点：
 
-1) **思维链缺失**：后端的 GeminiCLI 只在 `part.get(\"thought\")` 为真时才把文本映射到 `reasoning_content`（`AntiHub-Backend/app/services/gemini_cli_api_service.py:588`）；如果 cloudcode-pa 的 SSE 结构实际不是这个字段（或 thought 片段被包在别的结构里），就会表现为“不反馈思维链”。
-2) **流式被压到最后输出**：如果部署链路上有反向代理/压缩层对 `text/event-stream` 做了缓冲（或开启 gzip），会出现你描述的“最后一秒一起吐”。后端路由已经加了 `X-Accel-Buffering: no`（例如 `AntiHub-Backend/app/api/routes/v1.py:1373`），但这只能影响 Nginx 的 buffering，不能保证所有代理层都不缓冲。
+1) **思维链缺失**：GeminiCLI 上游的 thought 片段字段不一定稳定（可能是 `thought` / `thoughtSignature` 等组合）；如果后端只按单一字段判断，就会把 thought 当普通正文输出，表现为“不反馈思维链”。
+2) **流式被压到最后输出**：除了“代理层缓冲/压缩”以外，还有一个常见根因是 **SSE data 多行/分段**：如果客户端按“单行 data: 直接 json.loads”解析，会把被拆成多行的 event 丢掉，结果看起来像“前面没输出，最后一秒把剩余内容一次性吐完”。
 
 ### 建议的最小验证手段（后续执行时）
-- 在 `gemini-cli` 实际请求链路上抓 **raw SSE**（服务端日志/调试开关），确认上游事件里 thought 的字段名与分包方式。
-- 同时检查部署侧（Nginx/Caddy/Traefik）是否对 `text/event-stream` 开启 gzip 或 buffer。
+- 开启服务端 raw SSE 采样日志：设置环境变量 `GEMINI_CLI_RAW_SSE_SAMPLE=1`，观察日志里 `dt_ms` 是否持续增长且能看到 `thoughtSignature/thought` 等字段结构（注意：日志只输出 keys/长度，不输出正文）。
+- 确认部署侧对 `text/event-stream` **禁用 buffering 与 gzip/compress**（后端只能通过响应头“尽量提示”，不能强制所有中间层不缓冲）。以 Nginx 为例：SSE 路径需要 `proxy_buffering off; gzip off;`（以及必要时关闭缓存/transform）。
 
 ## 5. “需要对 KEY 支持修改类型”项（CSV 最后一行）
 

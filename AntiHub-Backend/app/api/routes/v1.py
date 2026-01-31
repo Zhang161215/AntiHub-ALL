@@ -56,6 +56,20 @@ def _truncate_sse_error_message(message: str, *, max_len: int = 2000) -> str:
     return msg[:max_len] + "…"
 
 
+def _sse_no_buffer_headers() -> Dict[str, str]:
+    """
+    SSE（text/event-stream）防缓冲头：
+    - X-Accel-Buffering: no 仅对 Nginx 生效，但应该始终带上
+    - Cache-Control: no-transform 避免中间层改写/压缩 event-stream
+    """
+
+    return {
+        "Cache-Control": "no-cache, no-transform",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+    }
+
+
 def _responses_sse_error(
     message: str,
     *,
@@ -764,11 +778,7 @@ async def responses(
                 return StreamingResponse(
                     generate(),
                     media_type="text/event-stream",
-                    headers={
-                        "Cache-Control": "no-cache",
-                        "Connection": "keep-alive",
-                        "X-Accel-Buffering": "no",
-                    },
+                    headers=_sse_no_buffer_headers(),
                 )
 
             resp_obj, account = await codex_service.execute_codex_responses(
@@ -1077,11 +1087,7 @@ async def chat_completions(
                 return StreamingResponse(
                     generate(),
                     media_type="text/event-stream",
-                    headers={
-                        "Cache-Control": "no-cache",
-                        "Connection": "keep-alive",
-                        "X-Accel-Buffering": "no",
-                    },
+                    headers=_sse_no_buffer_headers(),
                 )
 
             choices = [
@@ -1256,11 +1262,7 @@ async def chat_completions(
                 return StreamingResponse(
                     generate(),
                     media_type="text/event-stream",
-                    headers={
-                        "Cache-Control": "no-cache",
-                        "Connection": "keep-alive",
-                        "X-Accel-Buffering": "no",
-                    },
+                    headers=_sse_no_buffer_headers(),
                 )
 
             resp_obj, account = await codex_service.execute_codex_responses(
@@ -1374,11 +1376,7 @@ async def chat_completions(
             return StreamingResponse(
                 generate(),
                 media_type="text/event-stream",
-                headers={
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
-                    "X-Accel-Buffering": "no",
-                },
+                headers=_sse_no_buffer_headers(),
             )
 
         # 非流式请求
