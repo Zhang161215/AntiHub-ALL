@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -36,6 +37,117 @@ logger = logging.getLogger(__name__)
 
 MODELS_CACHE_TTL_SECONDS = 24 * 60 * 60
 MODELS_FALLBACK_CACHE_TTL_SECONDS = 5 * 60
+
+
+def _env_flag_enabled(key: str) -> bool:
+    v = (os.getenv(key) or "").strip().lower()
+    return v in {"1", "true", "yes", "y", "on"}
+
+
+class _GeminiCLISSESampleLogger:
+    """
+    GeminiCLI raw SSE 采样日志（默认关闭）。
+
+    目的：定位“部署链路缓冲/压缩”与上游字段结构（thought/thoughtSignature）。
+
+    安全约束：只输出结构信息/长度/keys，不输出正文内容。
+    """
+
+    def __init__(self, *, label: str):
+        self.enabled = _env_flag_enabled("GEMINI_CLI_RAW_SSE_SAMPLE")
+        self.label = label
+        self.start = time.monotonic()
+        self.count = 0
+        self.max_events = 20
+
+    def maybe_log(self, *, data: bytes, event_obj: Any) -> None:
+        if not self.enabled:
+            return
+        if self.count >= self.max_events:
+            return
+
+        self.count += 1
+        dt_ms = int((time.monotonic() - self.start) * 1000)
+        summary = _summarize_gemini_cli_event(event_obj)
+        try:
+            summary_str = json.dumps(summary, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+        except Exception:
+            summary_str = "{}"
+        logger.info(
+            "GeminiCLI raw SSE sample label=%s idx=%s dt_ms=%s data_len=%s summary=%s",
+            self.label,
+            self.count,
+            dt_ms,
+            len(data or b""),
+            summary_str,
+        )
+
+
+def _summarize_gemini_cli_event(event_obj: Any) -> Dict[str, Any]:
+    if not isinstance(event_obj, dict):
+        return {"type": "non_dict"}
+
+    if "error" in event_obj:
+        err = event_obj.get("error")
+        if isinstance(err, dict):
+            return {"type": "error", "keys": sorted([str(k) for k in err.keys()])[:20]}
+        return {"type": "error"}
+
+    response = event_obj.get("response")
+    if not isinstance(response, dict):
+        return {"type": "no_response", "keys": sorted([str(k) for k in event_obj.keys()])[:20]}
+
+    out: Dict[str, Any] = {
+        "type": "response",
+        "modelVersion": (response.get("modelVersion") or "").strip(),
+        "responseId": (response.get("responseId") or "").strip(),
+        "response_keys": sorted([str(k) for k in response.keys()])[:30],
+    }
+
+    candidates = response.get("candidates")
+    first = candidates[0] if isinstance(candidates, list) and candidates and isinstance(candidates[0], dict) else {}
+    if isinstance(first, dict):
+        out["finishReason"] = (first.get("finishReason") or "").strip()
+
+        content = first.get("content") if isinstance(first.get("content"), dict) else {}
+        parts = content.get("parts") if isinstance(content.get("parts"), list) else []
+
+        parts_out: List[Dict[str, Any]] = []
+        for part in parts[:5]:
+            if not isinstance(part, dict):
+                continue
+            thought_signature = part.get("thoughtSignature") or part.get("thought_signature")
+            has_thought_signature = isinstance(thought_signature, str) and thought_signature.strip() != ""
+            parts_out.append(
+                {
+                    "keys": sorted([str(k) for k in part.keys()])[:30],
+                    "text_len": len(part.get("text") or "") if isinstance(part.get("text"), str) else 0,
+                    "thought": bool(part.get("thought")),
+                    "has_thoughtSignature": has_thought_signature,
+                    "has_functionCall": isinstance(
+                        (part.get("functionCall") or part.get("function_call")), dict
+                    ),
+                    "has_inlineData": isinstance(
+                        (part.get("inlineData") or part.get("inline_data")), dict
+                    ),
+                }
+            )
+        out["parts"] = parts_out
+
+    return out
+
+
+def _is_thought_part(part: Dict[str, Any]) -> bool:
+    """
+    GeminiCLI 上游字段可能出现：
+    - thought: true
+    - thoughtSignature: "...", 但没有 thought 字段
+    """
+
+    if bool(part.get("thought")):
+        return True
+    thought_signature = part.get("thoughtSignature") or part.get("thought_signature")
+    return isinstance(thought_signature, str) and thought_signature.strip() != ""
 
 
 def _now_utc() -> datetime:
@@ -584,7 +696,7 @@ def _gemini_cli_event_to_openai_chunks(
 
         if isinstance(text_val, str) and text_val != "":
             payload["choices"][0]["delta"]["role"] = "assistant"
-            if bool(part.get("thought")):
+            if _is_thought_part(part):
                 payload["choices"][0]["delta"]["reasoning_content"] = text_val
             else:
                 payload["choices"][0]["delta"]["content"] = text_val
@@ -674,7 +786,7 @@ def _gemini_cli_response_to_openai_response(raw_json: Dict[str, Any]) -> Dict[st
             continue
 
         if isinstance(text_val, str) and text_val != "":
-            if bool(part.get("thought")):
+            if _is_thought_part(part):
                 reasoning_texts.append(text_val)
             else:
                 content_texts.append(text_val)
@@ -915,28 +1027,53 @@ class GeminiCLIAPIService:
                     yield _openai_done_sse()
                     return
 
+                sample_logger = _GeminiCLISSESampleLogger(label="openai_chat")
                 buffer = b""
+                event_data_lines: List[bytes] = []
                 async for chunk in resp.aiter_raw():
                     if not chunk:
                         continue
                     buffer += chunk
                     while b"\n" in buffer:
                         line, buffer = buffer.split(b"\n", 1)
-                        line = line.strip(b"\r")
-                        if not line or not line.startswith(b"data:"):
+                        line = line.rstrip(b"\r")
+
+                        # SSE event delimiter
+                        if line == b"":
+                            if not event_data_lines:
+                                continue
+                            data = b"\n".join(event_data_lines).strip()
+                            event_data_lines = []
+                            if not data:
+                                continue
+                            try:
+                                event_obj = json.loads(data.decode("utf-8", errors="replace"))
+                            except Exception:
+                                continue
+                            sample_logger.maybe_log(data=data, event_obj=event_obj)
+                            if not isinstance(event_obj, dict):
+                                continue
+
+                            for payload_obj in _gemini_cli_event_to_openai_chunks(event_obj, state=state):
+                                yield f"data: {json.dumps(payload_obj, ensure_ascii=False)}\n\n".encode("utf-8")
                             continue
-                        data = line[5:].strip()
-                        if not data:
+
+                        if line.startswith(b"data:"):
+                            event_data_lines.append(line[5:].lstrip())
                             continue
+
+                # best-effort flush（极端情况下上游不以空行结尾）
+                if event_data_lines:
+                    data = b"\n".join(event_data_lines).strip()
+                    if data:
                         try:
                             event_obj = json.loads(data.decode("utf-8", errors="replace"))
                         except Exception:
-                            continue
-                        if not isinstance(event_obj, dict):
-                            continue
-
-                        for payload_obj in _gemini_cli_event_to_openai_chunks(event_obj, state=state):
-                            yield f"data: {json.dumps(payload_obj, ensure_ascii=False)}\n\n".encode("utf-8")
+                            event_obj = None
+                        if isinstance(event_obj, dict):
+                            sample_logger.maybe_log(data=data, event_obj=event_obj)
+                            for payload_obj in _gemini_cli_event_to_openai_chunks(event_obj, state=state):
+                                yield f"data: {json.dumps(payload_obj, ensure_ascii=False)}\n\n".encode("utf-8")
 
                 yield _openai_done_sse()
 
@@ -1007,26 +1144,52 @@ class GeminiCLIAPIService:
                     )
                     return
 
+                sample_logger = _GeminiCLISSESampleLogger(label="gemini_v1beta")
                 buffer = b""
+                event_data_lines: List[bytes] = []
                 async for chunk in resp.aiter_raw():
                     if not chunk:
                         continue
                     buffer += chunk
                     while b"\n" in buffer:
                         line, buffer = buffer.split(b"\n", 1)
-                        line = line.strip(b"\r")
-                        if not line or not line.startswith(b"data:"):
+                        line = line.rstrip(b"\r")
+
+                        # SSE event delimiter
+                        if line == b"":
+                            if not event_data_lines:
+                                continue
+                            data = b"\n".join(event_data_lines).strip()
+                            event_data_lines = []
+                            if not data:
+                                continue
+                            try:
+                                event_obj = json.loads(data.decode("utf-8", errors="replace"))
+                            except Exception:
+                                continue
+                            sample_logger.maybe_log(data=data, event_obj=event_obj)
+                            if not isinstance(event_obj, dict):
+                                continue
+                            resp_obj = event_obj.get("response")
+                            if not isinstance(resp_obj, dict):
+                                continue
+                            yield f"data: {json.dumps(resp_obj, ensure_ascii=False)}\n\n".encode("utf-8")
                             continue
-                        data = line[5:].strip()
-                        if not data:
+
+                        if line.startswith(b"data:"):
+                            event_data_lines.append(line[5:].lstrip())
                             continue
+
+                # best-effort flush（极端情况下上游不以空行结尾）
+                if event_data_lines:
+                    data = b"\n".join(event_data_lines).strip()
+                    if data:
                         try:
                             event_obj = json.loads(data.decode("utf-8", errors="replace"))
                         except Exception:
-                            continue
-                        if not isinstance(event_obj, dict):
-                            continue
-                        resp_obj = event_obj.get("response")
-                        if not isinstance(resp_obj, dict):
-                            continue
-                        yield f"data: {json.dumps(resp_obj, ensure_ascii=False)}\n\n".encode("utf-8")
+                            event_obj = None
+                        if isinstance(event_obj, dict):
+                            sample_logger.maybe_log(data=data, event_obj=event_obj)
+                            resp_obj = event_obj.get("response")
+                            if isinstance(resp_obj, dict):
+                                yield f"data: {json.dumps(resp_obj, ensure_ascii=False)}\n\n".encode("utf-8")

@@ -35,10 +35,11 @@ from app.services.usage_log_service import (
 )
 from app.schemas.plugin_api import ChatCompletionRequest
 from app.cache import RedisClient
+from app.core.spec_guard import ensure_spec_allowed
 from app.utils.openai_responses_compat import (
-    ChatCompletionsToResponsesSSETranslator,
-    chat_completions_response_to_responses_response,
-    responses_request_to_chat_completions_request,
+    ResponsesToChatCompletionsSSETranslator,
+    chat_completions_request_to_responses_request,
+    responses_response_to_chat_completions_response,
 )
 
 
@@ -53,6 +54,20 @@ def _truncate_sse_error_message(message: str, *, max_len: int = 2000) -> str:
     if len(msg) <= max_len:
         return msg
     return msg[:max_len] + "…"
+
+
+def _sse_no_buffer_headers() -> Dict[str, str]:
+    """
+    SSE（text/event-stream）防缓冲头：
+    - X-Accel-Buffering: no 仅对 Nginx 生效，但应该始终带上
+    - Cache-Control: no-transform 避免中间层改写/压缩 event-stream
+    """
+
+    return {
+        "Cache-Control": "no-cache, no-transform",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+    }
 
 
 def _responses_sse_error(
@@ -633,13 +648,11 @@ async def image_generations(
 @router.post(
     "/responses",
     summary="Responses API（兼容）",
-    description="兼容 OpenAI `/v1/responses`，内部转换为 `/v1/chat/completions` 再返回 Responses JSON/SSE。",
+    description="兼容 OpenAI `/v1/responses`（当前仅放行 config_type=codex；其它渠道统一 403）。",
 )
 async def responses(
     raw_request: Request,
     current_user: User = Depends(get_user_flexible),
-    antigravity_service: PluginAPIService = Depends(get_plugin_api_service),
-    kiro_service: KiroService = Depends(get_kiro_service),
     codex_service: CodexService = Depends(get_codex_service),
 ):
     start_time = time.monotonic()
@@ -665,12 +678,12 @@ async def responses(
             config_type = api_type
 
     effective_config_type = config_type or "antigravity"
-    if effective_config_type in ("zai-image", "zai-tts"):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="config_type does not support responses")
-    use_kiro = effective_config_type == "kiro"
     use_codex = effective_config_type == "codex"
 
     try:
+        # OAIResponses 白名单：仅 codex（拦截尽量靠前，避免 Responses 被隐式转成 ChatCompletions 走错后端）
+        ensure_spec_allowed("OAIResponses", effective_config_type)
+
         if use_codex:
             stream = bool(request_json.get("stream"))
 
@@ -765,11 +778,7 @@ async def responses(
                 return StreamingResponse(
                     generate(),
                     media_type="text/event-stream",
-                    headers={
-                        "Cache-Control": "no-cache",
-                        "Connection": "keep-alive",
-                        "X-Accel-Buffering": "no",
-                    },
+                    headers=_sse_no_buffer_headers(),
                 )
 
             resp_obj, account = await codex_service.execute_codex_responses(
@@ -808,150 +817,6 @@ async def responses(
                         total_tokens=total_tok,
                     )
             return JSONResponse(content=resp_obj)
-
-        if use_kiro and current_user.beta != 1 and getattr(current_user, "trust_level", 0) < 3:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Kiro配置仅对beta计划用户开放",
-            )
-
-        extra_headers: Dict[str, str] = {}
-        if config_type:
-            extra_headers["X-Account-Type"] = config_type
-
-        chat_req = responses_request_to_chat_completions_request(request_json)
-        stream = bool(chat_req.get("stream"))
-
-        if stream:
-            tracker = SSEUsageTracker()
-            translator = ChatCompletionsToResponsesSSETranslator(original_request=request_json)
-
-            async def generate():
-                had_exception = False
-                try:
-                    if use_kiro:
-                        async for chunk in kiro_service.chat_completions_stream(
-                            user_id=current_user.id,
-                            request_data=chat_req,
-                        ):
-                            b = bytes(chunk) if isinstance(chunk, (bytes, bytearray)) else str(chunk).encode("utf-8", errors="replace")
-                            tracker.feed(b)
-                            events, done = translator.feed(b)
-                            for ev in events:
-                                yield ev
-                            if done:
-                                break
-                    else:
-                        async for chunk in antigravity_service.proxy_stream_request(
-                            user_id=current_user.id,
-                            method="POST",
-                            path="/v1/chat/completions",
-                            json_data=chat_req,
-                            extra_headers=extra_headers if extra_headers else None,
-                        ):
-                            tracker.feed(chunk)
-                            events, done = translator.feed(chunk)
-                            for ev in events:
-                                yield ev
-                            if done:
-                                break
-                except asyncio.CancelledError:
-                    had_exception = True
-                    tracker.success = False
-                    tracker.status_code = tracker.status_code or 499
-                    tracker.error_message = tracker.error_message or "client disconnected"
-                    return
-                except Exception as e:
-                    had_exception = True
-                    tracker.success = False
-                    tracker.status_code = tracker.status_code or 500
-                    tracker.error_message = str(e)
-                    logger.error(
-                        "/v1/responses stream failed: user_id=%s config_type=%s error=%s",
-                        current_user.id,
-                        effective_config_type,
-                        type(e).__name__,
-                        exc_info=True,
-                    )
-                    yield _responses_sse_error(
-                        str(e) or "Upstream request failed",
-                        code=tracker.status_code or 500,
-                        error_type="upstream_error",
-                    )
-                    return
-                finally:
-                    tracker.finalize()
-
-                    # 正常结束才补 response.completed（异常时不要乱发“completed”）
-                    if not had_exception:
-                        usage = None
-                        if tracker.total_tokens:
-                            usage = {
-                                "input_tokens": tracker.input_tokens,
-                                "output_tokens": tracker.output_tokens,
-                                "total_tokens": tracker.total_tokens,
-                            }
-                        for ev in translator.finalize(usage=usage):
-                            yield ev
-
-                    duration_ms = int((time.monotonic() - start_time) * 1000)
-                    await UsageLogService.record(
-                        user_id=current_user.id,
-                        api_key_id=api_key_id,
-                        endpoint=endpoint,
-                        method=method,
-                        model_name=model_name,
-                        config_type=effective_config_type,
-                        stream=True,
-                        input_tokens=tracker.input_tokens,
-                        output_tokens=tracker.output_tokens,
-                        total_tokens=tracker.total_tokens,
-                        success=tracker.success,
-                        status_code=tracker.status_code,
-                        error_message=tracker.error_message,
-                        duration_ms=duration_ms,
-                    )
-
-            return StreamingResponse(
-                generate(),
-                media_type="text/event-stream",
-                headers={
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
-                    "X-Accel-Buffering": "no",
-                },
-            )
-
-        # 非流式：直接拿 chat.completions JSON，再转换为 responses JSON
-        if use_kiro:
-            chat_resp = await kiro_service.chat_completions(current_user.id, chat_req)
-        else:
-            chat_resp = await antigravity_service.proxy_request(
-                user_id=current_user.id,
-                method="POST",
-                path="/v1/chat/completions",
-                json_data=chat_req,
-                extra_headers=extra_headers if extra_headers else None,
-            )
-
-        duration_ms = int((time.monotonic() - start_time) * 1000)
-        in_tok, out_tok, total_tok = extract_openai_usage(chat_resp)
-        await UsageLogService.record(
-            user_id=current_user.id,
-            api_key_id=api_key_id,
-            endpoint=endpoint,
-            method=method,
-            model_name=model_name,
-            config_type=effective_config_type,
-            stream=False,
-            input_tokens=in_tok,
-            output_tokens=out_tok,
-            total_tokens=total_tok,
-            success=True,
-            status_code=200,
-            duration_ms=duration_ms,
-        )
-        return JSONResponse(content=chat_completions_response_to_responses_response(chat_resp, original_request=request_json))
 
     except HTTPException as e:
         duration_ms = int((time.monotonic() - start_time) * 1000)
@@ -1070,6 +935,7 @@ async def chat_completions(
     current_user: User = Depends(get_user_flexible),
     antigravity_service: PluginAPIService = Depends(get_plugin_api_service),
     kiro_service: KiroService = Depends(get_kiro_service),
+    codex_service: CodexService = Depends(get_codex_service),
     gemini_cli_service: GeminiCLIAPIService = Depends(get_gemini_cli_api_service),
     zai_image_service: ZaiImageService = Depends(get_zai_image_service),
 ):
@@ -1221,11 +1087,7 @@ async def chat_completions(
                 return StreamingResponse(
                     generate(),
                     media_type="text/event-stream",
-                    headers={
-                        "Cache-Control": "no-cache",
-                        "Connection": "keep-alive",
-                        "X-Accel-Buffering": "no",
-                    },
+                    headers=_sse_no_buffer_headers(),
                 )
 
             choices = [
@@ -1292,10 +1154,157 @@ async def chat_completions(
 
     try:
         if use_codex:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Codex 账号请使用 /v1/responses（Responses API）",
+            request_data = request.model_dump()
+            responses_request = chat_completions_request_to_responses_request(request_data)
+
+            if request.stream:
+                tracker = SSEUsageTracker()
+                translator = ResponsesToChatCompletionsSSETranslator(original_request=request_data)
+                client, resp, _account = await codex_service.open_codex_responses_stream(
+                    user_id=current_user.id,
+                    request_data=responses_request,
+                    user_agent=raw_request.headers.get("User-Agent"),
+                )
+
+                async def generate():
+                    had_exception = False
+                    try:
+                        async for chunk in resp.aiter_bytes():
+                            if isinstance(chunk, (bytes, bytearray)):
+                                b = bytes(chunk)
+                            else:
+                                b = str(chunk).encode("utf-8", errors="replace")
+                            tracker.feed(b)
+
+                            events, done = translator.feed(b)
+                            for ev in events:
+                                yield ev
+                            if done:
+                                break
+
+                        for ev in translator.finalize():
+                            yield ev
+                    except asyncio.CancelledError:
+                        had_exception = True
+                        tracker.success = False
+                        tracker.status_code = tracker.status_code or 499
+                        tracker.error_message = tracker.error_message or "client disconnected"
+                        return
+                    except Exception as e:
+                        had_exception = True
+                        tracker.success = False
+                        tracker.status_code = tracker.status_code or 500
+                        tracker.error_message = str(e)
+                        logger.error(
+                            "codex /v1/chat/completions stream failed: user_id=%s error=%s",
+                            current_user.id,
+                            type(e).__name__,
+                            exc_info=True,
+                        )
+                        err_payload = {
+                            "error": {
+                                "message": _truncate_sse_error_message(str(e) or "Codex upstream request failed"),
+                                "type": "codex_upstream_error",
+                                "code": int(tracker.status_code or 500),
+                            }
+                        }
+                        data = json.dumps(err_payload, ensure_ascii=False, separators=(",", ":"))
+                        yield f"data: {data}\n\n".encode("utf-8")
+                        yield b"data: [DONE]\n\n"
+                        return
+                    finally:
+                        tracker.finalize()
+                        duration_ms = int((time.monotonic() - start_time) * 1000)
+                        await UsageLogService.record(
+                            user_id=current_user.id,
+                            api_key_id=api_key_id,
+                            endpoint=endpoint,
+                            method=method,
+                            model_name=model_name,
+                            config_type="codex",
+                            stream=True,
+                            input_tokens=tracker.input_tokens,
+                            output_tokens=tracker.output_tokens,
+                            total_tokens=tracker.total_tokens,
+                            success=(False if had_exception else tracker.success),
+                            status_code=tracker.status_code or (500 if had_exception else 200),
+                            error_message=tracker.error_message,
+                            duration_ms=duration_ms,
+                        )
+                        if _account is not None and (
+                            tracker.input_tokens
+                            or tracker.output_tokens
+                            or tracker.cached_tokens
+                            or tracker.total_tokens
+                        ):
+                            account_id = int(getattr(_account, "id", 0) or 0)
+                            if account_id:
+                                uncached_input = max(tracker.input_tokens - tracker.cached_tokens, 0)
+                                await codex_service.record_account_consumed_tokens(
+                                    user_id=current_user.id,
+                                    account_id=account_id,
+                                    input_tokens=uncached_input,
+                                    output_tokens=tracker.output_tokens,
+                                    cached_tokens=tracker.cached_tokens,
+                                    total_tokens=tracker.total_tokens,
+                                )
+                        if resp is not None:
+                            try:
+                                await resp.aclose()
+                            except Exception:
+                                pass
+                        if client is not None:
+                            try:
+                                await client.aclose()
+                            except Exception:
+                                pass
+
+                return StreamingResponse(
+                    generate(),
+                    media_type="text/event-stream",
+                    headers=_sse_no_buffer_headers(),
+                )
+
+            resp_obj, account = await codex_service.execute_codex_responses(
+                user_id=current_user.id,
+                request_data=responses_request,
+                user_agent=raw_request.headers.get("User-Agent"),
             )
+            result = responses_response_to_chat_completions_response(
+                resp_obj,
+                original_request=request_data,
+            )
+
+            duration_ms = int((time.monotonic() - start_time) * 1000)
+            in_tok, out_tok, total_tok, cached_tok = extract_openai_usage_details(resp_obj)
+            await UsageLogService.record(
+                user_id=current_user.id,
+                api_key_id=api_key_id,
+                endpoint=endpoint,
+                method=method,
+                model_name=model_name,
+                config_type="codex",
+                stream=False,
+                input_tokens=in_tok,
+                output_tokens=out_tok,
+                total_tokens=total_tok,
+                success=True,
+                status_code=200,
+                duration_ms=duration_ms,
+            )
+            if any([in_tok, out_tok, total_tok, cached_tok]):
+                account_id = int(getattr(account, "id", 0) or 0)
+                if account_id:
+                    uncached_input = max(in_tok - cached_tok, 0)
+                    await codex_service.record_account_consumed_tokens(
+                        user_id=current_user.id,
+                        account_id=account_id,
+                        input_tokens=uncached_input,
+                        output_tokens=out_tok,
+                        cached_tokens=cached_tok,
+                        total_tokens=total_tok,
+                    )
+            return result
 
         if use_kiro and current_user.beta != 1 and getattr(current_user, "trust_level", 0) < 3:
             raise HTTPException(
@@ -1367,11 +1376,7 @@ async def chat_completions(
             return StreamingResponse(
                 generate(),
                 media_type="text/event-stream",
-                headers={
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
-                    "X-Accel-Buffering": "no",
-                },
+                headers=_sse_no_buffer_headers(),
             )
 
         # 非流式请求

@@ -38,6 +38,7 @@
 6. CodexCLI: 已完全支持
 7. GeminiCLI： 已完全支持
 8. ZAI-TTS: 已完成开发，待测试
+9. ZAI-IMAGE：已完成支持
 
 ## 你需要准备
 
