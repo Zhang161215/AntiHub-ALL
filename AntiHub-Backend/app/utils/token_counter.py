@@ -79,6 +79,7 @@ def count_tokens(text: str) -> int:
     tokens = char_units / 4.0
 
     # 根据 token 数量应用系数调整（小文本有更高的开销比例）
+    # 大文本增加 15% 安全余量，确保 Claude Code 能及时触发自动压缩
     if tokens < 100:
         acc_token = tokens * 1.5
     elif tokens < 200:
@@ -88,7 +89,7 @@ def count_tokens(text: str) -> int:
     elif tokens < 800:
         acc_token = tokens * 1.2
     else:
-        acc_token = tokens * 1.0
+        acc_token = tokens * 1.15  # 大文本增加 15% 安全余量
 
     return max(1, int(acc_token))
 
