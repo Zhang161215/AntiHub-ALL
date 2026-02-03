@@ -2284,7 +2284,14 @@ export default function AccountsPage() {
                                 return `${remaining}%`;
                               };
 
-                              return `${format(account.limit_5h_used_percent, account.limit_5h_reset_at)}/${format(account.limit_week_used_percent, account.limit_week_reset_at)}`;
+                              const hasWeekUsed =
+                                account.limit_week_used_percent !== null && account.limit_week_used_percent !== undefined;
+                              const weekUsed = hasWeekUsed ? account.limit_week_used_percent : account.limit_5h_used_percent;
+                              const weekResetAt = hasWeekUsed
+                                ? account.limit_week_reset_at
+                                : (account.limit_week_reset_at ?? account.limit_5h_reset_at);
+
+                              return `${format(account.limit_5h_used_percent, account.limit_5h_reset_at)}/${format(weekUsed, weekResetAt)}`;
                             })()}
                           </TableCell>
                           <TableCell className="text-sm text-muted-foreground whitespace-nowrap">
@@ -3384,14 +3391,26 @@ export default function AccountsPage() {
                       const w5 = codexWhamData.parsed.rate_limit?.primary_window;
                       const ww = codexWhamData.parsed.rate_limit?.secondary_window;
                       const rows = [
-                        { name: '5 小时限额', w: w5 },
-                        { name: '周限额', w: ww },
+                        { key: '5h' as const, name: '5 小时限额', w: w5 },
+                        { key: 'week' as const, name: '周限额', w: ww },
                       ];
 
                       return rows.map((row) => {
-                        const used = row.w?.used_percent ?? null;
+                        const usedRaw = row.w?.used_percent;
+                        let used: number | null = typeof usedRaw === 'number' ? usedRaw : null;
+                        let resetAtRaw: string | null = row.w?.reset_at ?? null;
+
+                        if (row.key === 'week') {
+                          const fallbackUsed = w5?.used_percent;
+                          if (used === null && typeof fallbackUsed === 'number') {
+                            used = fallbackUsed;
+                          }
+                          if (resetAtRaw === null) {
+                            resetAtRaw = w5?.reset_at ?? null;
+                          }
+                        }
                         const remaining = typeof used === 'number' ? Math.max(0, 100 - used) : null;
-                        const resetAt = row.w?.reset_at ? new Date(row.w.reset_at).toLocaleString('zh-CN') : '-';
+                        const resetAt = resetAtRaw ? new Date(resetAtRaw).toLocaleString('zh-CN') : '-';
 
                         return (
                           <TableRow key={row.name}>
