@@ -4,8 +4,8 @@ description: Kiro 账号管理和模型映射功能。包含账号导入、用�
 usage:
   created_at: 2026-02-06T02:53:32.334Z
   last_updated: 2026-02-06T02:53:32.334Z
-  access_count: 10
-  last_accessed: 2026-02-06T06:15:50.105Z
+  access_count: 16
+  last_accessed: 2026-02-06T12:03:08.419Z
 ---
 
 ## 项目架构

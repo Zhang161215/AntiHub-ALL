@@ -1,5 +1,3 @@
-# syntax=docker/dockerfile:1.6
-
 # ============================================
 # AntiHook Stage - build binaries for web embed
 # ============================================

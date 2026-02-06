@@ -2192,6 +2192,7 @@ export interface KiroModel {
   object: string;
   created: number;
   owned_by: string;
+  display_name?: string;
 }
 
 export interface KiroModelsResponse {

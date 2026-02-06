@@ -853,14 +853,56 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
       return;
     }
 
-    const extracted: Array<{ token: string; error?: string }> = items.map((item) => {
-      if (typeof item === 'string' && item.trim()) return { token: item.trim() };
+    // 解析账号，支持 Social 和 IdC 两种格式
+    type ParsedAccount = 
+      | { type: 'social'; token: string; error?: string }
+      | { type: 'idc'; refreshToken: string; clientId: string; clientSecret: string; region?: string; accountName?: string; email?: string; error?: string };
+
+    const extracted: ParsedAccount[] = items.map((item) => {
+      if (typeof item === 'string' && item.trim()) {
+        return { type: 'social', token: item.trim() };
+      }
 
       if (!item || typeof item !== 'object' || Array.isArray(item)) {
-        return { token: '', error: '只支持对象或字符串' };
+        return { type: 'social', token: '', error: '只支持对象或字符串' };
       }
 
       const obj = item as Record<string, unknown>;
+      
+      // 检测是否为 IdC 格式（有 clientId 和 clientSecret）
+      const clientId = (obj.clientId ?? obj.client_id) as string | undefined;
+      const clientSecret = (obj.clientSecret ?? obj.client_secret) as string | undefined;
+      const refreshToken = (obj.refreshToken ?? obj.refresh_token ?? obj.RT ?? obj.rt) as string | undefined;
+      const authMethod = (obj.authMethod ?? obj.auth_method) as string | undefined;
+      
+      // 如果有 clientId + clientSecret，或者 authMethod 是 IdC，则认为是 IdC 格式
+      if ((clientId && clientSecret) || authMethod === 'IdC') {
+        if (!refreshToken?.trim()) {
+          return { type: 'idc', refreshToken: '', clientId: '', clientSecret: '', error: '缺少 refreshToken' };
+        }
+        if (!clientId?.trim()) {
+          return { type: 'idc', refreshToken: '', clientId: '', clientSecret: '', error: '缺少 clientId' };
+        }
+        if (!clientSecret?.trim()) {
+          return { type: 'idc', refreshToken: '', clientId: '', clientSecret: '', error: '缺少 clientSecret' };
+        }
+        
+        const region = (obj.region ?? obj.aws_region) as string | undefined;
+        const accountName = (obj.label ?? obj.account_name ?? obj.accountName) as string | undefined;
+        const email = (obj.email) as string | undefined;
+        
+        return {
+          type: 'idc',
+          refreshToken: refreshToken.trim(),
+          clientId: clientId.trim(),
+          clientSecret: clientSecret.trim(),
+          region: region?.trim() || 'us-east-1',
+          accountName: accountName?.trim(),
+          email: email?.trim(),
+        };
+      }
+
+      // 否则按 Social 格式处理
       const direct =
         (obj.RT ?? obj.rt ?? obj.refresh_token ?? obj.refreshToken ?? obj.RefreshToken) as unknown;
 
@@ -879,17 +921,20 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
       })();
 
       if (typeof tokenCandidate !== 'string' || !tokenCandidate.trim()) {
-        return { token: '', error: '找不到 RefreshToken（对象里必须至少有一个字符串值）' };
+        return { type: 'social', token: '', error: '找不到 RefreshToken（对象里必须至少有一个字符串值）' };
       }
 
-      return { token: tokenCandidate.trim() };
+      return { type: 'social', token: tokenCandidate.trim() };
     });
 
     setKiroBatchResults(
       extracted.map((entry, idx) => ({
         index: idx + 1,
-        status: entry.token ? 'pending' : 'error',
-        message: entry.token ? '等待导入' : entry.error || '解析失败',
+        status: (entry.type === 'social' ? entry.token : entry.refreshToken) ? 'pending' : 'error',
+        email: entry.type === 'idc' ? entry.email : undefined,
+        message: (entry.type === 'social' ? entry.token : entry.refreshToken) 
+          ? `等待导入 (${entry.type === 'idc' ? 'IdC' : 'Social'})` 
+          : entry.error || '解析失败',
       }))
     );
 
@@ -910,7 +955,9 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
       const item = extracted[idx];
       const index = idx + 1;
 
-      if (!item.token) {
+      // 检查是否有有效数据
+      const hasValidData = item.type === 'social' ? item.token : item.refreshToken;
+      if (!hasValidData) {
         failedCount++;
         updateResult(index, { status: 'error' });
         continue;
@@ -919,14 +966,30 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
       updateResult(index, { status: 'pending', message: '导入中...' });
 
       try {
-        const account = await createKiroAccount({
-          refresh_token: item.token,
-          auth_method: 'Social',
-          is_shared: 0,
-        });
-
-        let email = account.email ?? undefined;
+        let account: any;
+        let email: string | undefined;
         let available: number | undefined;
+
+        if (item.type === 'idc') {
+          // IdC 格式导入
+          account = await importKiroAwsIdcAccount({
+            refreshToken: item.refreshToken,
+            clientId: item.clientId,
+            clientSecret: item.clientSecret,
+            accountName: item.accountName || `Kiro IdC ${index}`,
+            isShared: 0,
+            region: item.region,
+          });
+          email = item.email || account.email;
+        } else {
+          // Social 格式导入
+          account = await createKiroAccount({
+            refresh_token: item.token,
+            auth_method: 'Social',
+            is_shared: 0,
+          });
+          email = account.email ?? undefined;
+        }
 
         try {
           const balance = await getKiroAccountBalance(account.account_id);
@@ -1035,14 +1098,57 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
     let clientId = '';
     let clientSecret = '';
     let region = '';
+    let accountName = '';
+    let email = '';
 
     const errors: string[] = [];
+
+    // 用于批量导入的账号列表
+    const batchAccounts: Array<{
+      refreshToken: string;
+      clientId: string;
+      clientSecret: string;
+      region?: string;
+      accountName?: string;
+      email?: string;
+    }> = [];
 
     for (const file of Array.from(files)) {
       try {
         const text = await file.text();
         const json = JSON.parse(text);
 
+        // 检查是否为导出的账号数组格式
+        if (Array.isArray(json)) {
+          for (const item of json) {
+            if (item.refreshToken && item.clientId && item.clientSecret) {
+              batchAccounts.push({
+                refreshToken: item.refreshToken,
+                clientId: item.clientId,
+                clientSecret: item.clientSecret,
+                region: item.region || 'us-east-1',
+                accountName: item.label || item.account_name || item.accountName,
+                email: item.email,
+              });
+            }
+          }
+          continue;
+        }
+
+        // 检查是否为单个导出账号格式（有 clientId + clientSecret + refreshToken）
+        if (json.refreshToken && json.clientId && json.clientSecret) {
+          batchAccounts.push({
+            refreshToken: json.refreshToken,
+            clientId: json.clientId,
+            clientSecret: json.clientSecret,
+            region: json.region || 'us-east-1',
+            accountName: json.label || json.account_name || json.accountName,
+            email: json.email,
+          });
+          continue;
+        }
+
+        // 原有的 AWS SSO 缓存文件格式
         if (json.refreshToken && json.clientIdHash) {
           refreshToken = json.refreshToken;
           if (json.region) {
@@ -1057,6 +1163,60 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
       } catch (err) {
         errors.push(`${file.name}: ${err instanceof Error ? err.message : '解析失败'}`);
       }
+    }
+
+    e.target.value = '';
+
+    // 如果有批量账号，直接执行导入
+    if (batchAccounts.length > 0) {
+      toasterRef.current?.show({
+        title: '文件解析成功',
+        message: `检测到 ${batchAccounts.length} 个 IdC 账号，正在导入...`,
+        variant: 'success',
+        position: 'top-right',
+      });
+
+      // 直接执行批量导入
+      let successCount = 0;
+      let failedCount = 0;
+      const errors: string[] = [];
+
+      for (let idx = 0; idx < batchAccounts.length; idx++) {
+        const acc = batchAccounts[idx];
+        try {
+          await importKiroAwsIdcAccount({
+            refreshToken: acc.refreshToken,
+            clientId: acc.clientId,
+            clientSecret: acc.clientSecret,
+            accountName: acc.accountName || `Kiro IdC ${idx + 1}`,
+            isShared: 0,
+            region: acc.region,
+          });
+          successCount++;
+        } catch (err) {
+          failedCount++;
+          errors.push(`${acc.email || `账号${idx + 1}`}: ${err instanceof Error ? err.message : '导入失败'}`);
+        }
+      }
+
+      if (successCount > 0) {
+        window.dispatchEvent(new CustomEvent('accountAdded'));
+        onSuccess?.();
+      }
+
+      const variant = successCount === 0 ? 'error' : failedCount > 0 ? 'warning' : 'success';
+      toasterRef.current?.show({
+        title: '批量导入完成',
+        message: `成功 ${successCount}，失败 ${failedCount}${errors.length > 0 ? '\n' + errors.join('\n') : ''}`,
+        variant,
+        position: 'top-right',
+      });
+
+      if (successCount > 0 && failedCount === 0) {
+        onOpenChange(false);
+        resetState();
+      }
+      return;
     }
 
     let filled = 0;
@@ -1077,8 +1237,6 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
       filled++;
     }
 
-    e.target.value = '';
-
     if (errors.length > 0) {
       toasterRef.current?.show({
         title: '部分文件解析失败',
@@ -1089,7 +1247,7 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
     } else if (filled === 0) {
       toasterRef.current?.show({
         title: '未找到有效数据',
-        message: '请确保选择了正确的 AWS SSO 缓存文件（kiro-auth-token.json 和 {hash}.json）',
+        message: '请确保选择了正确的文件：AWS SSO 缓存文件（kiro-auth-token.json 和 {hash}.json）或导出的账号 JSON 文件',
         variant: 'warning',
         position: 'top-right',
       });
@@ -2880,7 +3038,7 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
                       </Button>
                     </div>
                     <p className="text-xs text-muted-foreground">
-                      支持同时选择 <span className="font-mono">kiro-auth-token.json</span> 和 <span className="font-mono">{'{hash}'}.json</span>
+                      支持：AWS SSO 缓存文件、或导出的账号 JSON 文件（支持批量）
                     </p>
                   </div>
 
@@ -3202,12 +3360,16 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
                   <div className="border-t pt-6 space-y-3">
                     <Label className="text-base font-semibold">批量导入（JSON）</Label>
                     <p className="text-sm text-muted-foreground">
-                      支持 JSON 数组，或多个 JSON 对象用逗号分隔；每一项里随便一个字段的 value 是 RefreshToken 即可（导入顺序按 JSON 顺序）。
+                      支持 Social 和 IdC (Enterprise) 两种格式，自动识别。可粘贴 JSON 数组或多个对象用逗号分隔。
+                      <br />
+                      <span className="text-xs">• Social: 包含 refreshToken/RT 字段</span>
+                      <br />
+                      <span className="text-xs">• IdC: 包含 clientId + clientSecret + refreshToken 字段</span>
                     </p>
 
                     <Textarea
                       id="kiro-refresh-token-batch"
-                      placeholder='示例：[{\"RT\":\"xxxx\"},{\"随便写\":\"yyyy\"}]'
+                      placeholder='示例：[{"refreshToken":"xxx","clientId":"yyy","clientSecret":"zzz"}] 或 [{"RT":"xxxx"}]'
                       value={kiroBatchJson}
                       onChange={(e) => setKiroBatchJson(e.target.value)}
                       className="font-mono text-sm [field-sizing:fixed] min-h-[140px] max-h-[260px] overflow-y-auto"
