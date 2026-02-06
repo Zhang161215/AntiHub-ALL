@@ -107,12 +107,13 @@ import {
 } from '@/components/ui/select';
 import { MorphingSquare } from '@/components/ui/morphing-square';
 import { Gemini, Claude, OpenAI, Qwen } from '@lobehub/icons';
+import { cn } from '@/lib/utils';
 
 export default function AccountsPage() {
   const toasterRef = useRef<ToasterRef>(null);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [kiroAccounts, setKiroAccounts] = useState<KiroAccount[]>([]);
-  const [kiroBalances, setKiroBalances] = useState<Record<string, number>>({});
+  const [kiroBalances, setKiroBalances] = useState<Record<string, { available: number; total_limit: number; current_usage: number; reset_date: string }>>({});
   const [qwenAccounts, setQwenAccounts] = useState<QwenAccount[]>([]);
   const [codexAccounts, setCodexAccounts] = useState<CodexAccount[]>([]);
   const [codexRefreshErrorById, setCodexRefreshErrorById] = useState<Record<number, string>>({});
@@ -123,7 +124,20 @@ export default function AccountsPage() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [refreshingCookieId, setRefreshingCookieId] = useState<string | null>(null);
   const [refreshingCodexAccountId, setRefreshingCodexAccountId] = useState<number | null>(null);
-  const [activeTab, setActiveTab] = useState<'antigravity' | 'kiro' | 'qwen' | 'codex' | 'gemini' | 'zai-tts' | 'zai-image'>('kiro');
+  const [activeTab, setActiveTab] = useState<'antigravity' | 'kiro' | 'qwen' | 'codex' | 'gemini' | 'zai-tts' | 'zai-image'>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('antihub-accounts-tab');
+      if (saved && ['antigravity', 'kiro', 'qwen', 'codex', 'gemini', 'zai-tts', 'zai-image'].includes(saved)) {
+        return saved as any;
+      }
+    }
+    return 'kiro';
+  });
+
+  // Tab 变化时保存到 localStorage
+  useEffect(() => {
+    localStorage.setItem('antihub-accounts-tab', activeTab);
+  }, [activeTab]);
 
   // 添加账号 Drawer 状态
   const [isAddDrawerOpen, setIsAddDrawerOpen] = useState(false);
@@ -364,15 +378,20 @@ export default function AccountsPage() {
         setKiroAccounts(kiroData);
 
         // 加载每个Kiro账号的余额
-        const balances: Record<string, number> = {};
+        const balances: Record<string, { available: number; total_limit: number; current_usage: number; reset_date: string }> = {};
         await Promise.all(
           kiroData.map(async (account) => {
             try {
               const balanceData = await getKiroAccountBalance(account.account_id);
-              balances[account.account_id] = balanceData.balance.available || 0;
+              balances[account.account_id] = {
+                available: balanceData.balance.available || 0,
+                total_limit: balanceData.balance.total_limit || 0,
+                current_usage: balanceData.balance.current_usage || 0,
+                reset_date: balanceData.balance.reset_date || '',
+              };
             } catch (err) {
               console.error(`加载账号${account.account_id}余额失败:`, err);
-              balances[account.account_id] = 0;
+              balances[account.account_id] = { available: 0, total_limit: 0, current_usage: 0, reset_date: '' };
             }
           })
         );
@@ -1703,25 +1722,6 @@ export default function AccountsPage() {
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
             <div></div>
             <div className="flex flex-wrap items-center gap-2">
-              {/* 账号配置切换下拉菜单 */}
-              <Select value={activeTab} onValueChange={(value: 'antigravity' | 'kiro' | 'qwen' | 'codex' | 'gemini' | 'zai-tts' | 'zai-image') => setActiveTab(value)}>
-                <SelectTrigger className="w-[140px] sm:w-[160px] h-9">
-                  <SelectValue>
-                    <span className="flex items-center gap-2">
-                      <img src="/kiro.png" alt="" className="size-4 rounded" />
-                      Kiro
-                    </span>
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="kiro">
-                    <span className="flex items-center gap-2">
-                      <img src="/kiro.png" alt="" className="size-4 rounded" />
-                      Kiro
-                    </span>
-                  </SelectItem>
-                </SelectContent>
-              </Select>
               <Button
                 variant="outline"
                 size="default"
@@ -1897,105 +1897,210 @@ export default function AccountsPage() {
 
         {/* Kiro账号列表 */}
         {activeTab === 'kiro' && (
-          <Card className="flex min-h-0 flex-1 flex-col">
-            <CardHeader className="text-left">
-              <CardTitle className="text-left">Kiro账号</CardTitle>
-              <CardDescription className="text-left">
-                共 {kiroAccounts.length} 个账号
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="flex min-h-0 flex-1 flex-col">
-              {kiroAccounts.length === 0 ? (
-                <div className="text-center py-12 text-muted-foreground">
-                  <p className="text-lg mb-2">暂无Kiro账号</p>
-                  <p className="text-sm">点击“添加账号”按钮添加您的第一个Kiro账号</p>
+          <div className="flex min-h-0 flex-1 flex-col gap-4">
+            {/* 汇总统计 */}
+            {kiroAccounts.length > 0 && Object.keys(kiroBalances).length > 0 && (() => {
+              const totals = Object.values(kiroBalances).reduce(
+                (acc, b) => ({
+                  total: acc.total + (b?.total_limit || 0),
+                  used: acc.used + (b?.current_usage || 0),
+                }),
+                { total: 0, used: 0 }
+              );
+              const available = totals.total - totals.used;
+              const usagePercent = totals.total > 0 ? (totals.used / totals.total) * 100 : 0;
+              return (
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                  <Card className="bg-gradient-to-br from-blue-500/10 to-transparent border-blue-500/20">
+                    <CardContent className="p-4">
+                      <p className="text-xs text-muted-foreground mb-1">总额度</p>
+                      <p className="text-2xl font-bold font-mono">${totals.total.toFixed(0)}</p>
+                    </CardContent>
+                  </Card>
+                  <Card className="bg-gradient-to-br from-orange-500/10 to-transparent border-orange-500/20">
+                    <CardContent className="p-4">
+                      <p className="text-xs text-muted-foreground mb-1">已使用</p>
+                      <p className="text-2xl font-bold font-mono text-orange-500">${totals.used.toFixed(2)}</p>
+                    </CardContent>
+                  </Card>
+                  <Card className="bg-gradient-to-br from-green-500/10 to-transparent border-green-500/20">
+                    <CardContent className="p-4">
+                      <p className="text-xs text-muted-foreground mb-1">可用余额</p>
+                      <p className="text-2xl font-bold font-mono text-green-500">${available.toFixed(0)}</p>
+                    </CardContent>
+                  </Card>
+                  <Card>
+                    <CardContent className="p-4">
+                      <p className="text-xs text-muted-foreground mb-1">使用率</p>
+                      <div className="flex items-center gap-2">
+                        <p className={cn(
+                          "text-2xl font-bold font-mono",
+                          usagePercent > 80 ? "text-orange-500" : usagePercent > 60 ? "text-yellow-500" : "text-green-500"
+                        )}>{usagePercent.toFixed(1)}%</p>
+                      </div>
+                      <div className="h-1.5 bg-muted rounded-full overflow-hidden mt-2">
+                        <div 
+                          className={cn(
+                            "h-full rounded-full transition-all",
+                            usagePercent > 90 ? "bg-red-500" :
+                            usagePercent > 80 ? "bg-orange-500" :
+                            usagePercent > 60 ? "bg-yellow-500" : "bg-green-500"
+                          )}
+                          style={{ width: `${Math.min(usagePercent, 100)}%` }}
+                        />
+                      </div>
+                    </CardContent>
+                  </Card>
                 </div>
-              ) : (
-                <div className="flex-1 min-h-0 overflow-auto -mx-6 px-6 md:mx-0 md:px-0">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead className="min-w-[100px]">账号ID</TableHead>
-                        <TableHead className="min-w-[150px]">账号名称</TableHead>
-                        <TableHead className="min-w-[100px]">余额</TableHead>
-                        <TableHead className="min-w-[80px]">状态</TableHead>
-                        <TableHead className="min-w-[100px]">添加时间</TableHead>
-                        <TableHead className="text-right min-w-[80px]">操作</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {kiroAccounts.map((account) => (
-                        <TableRow key={account.account_id}>
-                          <TableCell className="font-mono text-sm">
-                            {account.account_id}
-                          </TableCell>
-                          <TableCell>
-                            {account.account_name || account.email || '未命名'}
-                          </TableCell>
-                          <TableCell className="font-mono text-sm">
-                            {kiroBalances[account.account_id] !== undefined
-                              ? `$${Number(kiroBalances[account.account_id] || 0).toFixed(2)}`
-                              : '加载中...'}
-                          </TableCell>
-                          <TableCell>
-                            <Badge variant={account.status === 1 ? 'default' : 'outline'} className="whitespace-nowrap">
-                              {account.status === 1 ? '启用' : '禁用'}     
-                            </Badge>
-                          </TableCell>
-                          <TableCell className="text-sm text-muted-foreground whitespace-nowrap">
-                            {new Date(account.created_at).toLocaleDateString('zh-CN')}
-                          </TableCell>
-                          <TableCell className="text-right">
-                            <DropdownMenu>
-                              <DropdownMenuTrigger asChild>
-                                <Button variant="ghost" size="sm">
-                                  <IconDotsVertical className="size-4" />
-                                </Button>
-                              </DropdownMenuTrigger>
-                              <DropdownMenuContent align="end">
-                                <DropdownMenuItem onClick={() => handleViewKiroDetail(account)}>
-                                  <IconChartBar className="size-4 mr-2" />
-                                  详细信息
-                                </DropdownMenuItem>
-                                <DropdownMenuItem onClick={() => handleCopyKiroCredentials(account)}>
-                                  <IconCopy className="size-4 mr-2" />
-                                  复制凭证为JSON
-                                </DropdownMenuItem>
-                                <DropdownMenuItem onClick={() => handleRenameKiro(account)}>
-                                  <IconEdit className="size-4 mr-2" />
-                                  重命名
-                                </DropdownMenuItem>
-                                <DropdownMenuItem onClick={() => handleToggleKiroStatus(account)}>
-                                  {account.status === 1 ? (
-                                    <>
-                                      <IconToggleLeft className="size-4 mr-2" />
-                                      禁用
-                                    </>
-                                  ) : (
-                                    <>
-                                      <IconToggleRight className="size-4 mr-2" />
-                                      启用
-                                    </>
+              );
+            })()}
+
+            {/* 账号卡片 */}
+            {kiroAccounts.length === 0 ? (
+              <Card className="flex-1">
+                <CardContent className="flex flex-col items-center justify-center py-16">
+                  <div className="w-16 h-16 rounded-full bg-muted flex items-center justify-center mb-4">
+                    <IconCirclePlusFilled className="size-8 text-muted-foreground" />
+                  </div>
+                  <p className="text-lg font-medium mb-1">暂无 Kiro 账号</p>
+                  <p className="text-sm text-muted-foreground mb-4">添加您的第一个 Kiro 账号开始使用</p>
+                  <Button onClick={handleAddAccount}>
+                    <IconCirclePlusFilled className="size-4 mr-2" />
+                    添加账号
+                  </Button>
+                </CardContent>
+              </Card>
+            ) : (
+              <div className="flex-1 min-h-0 overflow-auto">
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                    {kiroAccounts.map((account) => {
+                      const balance = kiroBalances[account.account_id];
+                      const usagePercent = balance && balance.total_limit > 0 
+                        ? (balance.current_usage / balance.total_limit) * 100 
+                        : 0;
+                      const availableAmount = balance ? balance.total_limit - balance.current_usage : 0;
+                      const isLowBalance = usagePercent > 80;
+                      
+                      return (
+                        <Card 
+                          key={account.account_id} 
+                          className={cn(
+                            "relative transition-all hover:shadow-md",
+                            account.status !== 1 && "opacity-60",
+                            isLowBalance && account.status === 1 && "border-orange-400/60"
+                          )}
+                        >
+                          <CardContent className="p-4">
+                            {/* 顶部：名称 + 状态 + 操作 */}
+                            <div className="flex items-start justify-between gap-2 mb-3">
+                              <div className="flex-1 min-w-0">
+                                <p className="text-sm font-medium truncate mb-1">
+                                  {account.account_name || account.email?.split('@')[0] || '未命名'}
+                                </p>
+                                <div className="flex flex-wrap gap-1">
+                                  {account.subscription && (
+                                    <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
+                                      {account.subscription}
+                                    </Badge>
                                   )}
-                                </DropdownMenuItem>
-                                <DropdownMenuItem
-                                  onClick={() => handleDeleteKiro(account.account_id)}
-                                  className="text-red-600"
-                                >
-                                  <IconTrash className="size-4 mr-2" />
-                                  删除
-                                </DropdownMenuItem>
-                              </DropdownMenuContent>
-                            </DropdownMenu>
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
+                                  <Badge variant="outline" className="text-[10px] px-1.5 py-0">
+                                    {account.auth_method === 'IdC' ? 'IdC' : 'Social'}
+                                  </Badge>
+                                  <Badge 
+                                    variant={account.status === 1 ? "default" : "secondary"}
+                                    className="text-[10px] px-1.5 py-0"
+                                  >
+                                    {account.status === 1 ? '启用' : '禁用'}
+                                  </Badge>
+                                </div>
+                              </div>
+                              <DropdownMenu>
+                                <DropdownMenuTrigger asChild>
+                                  <Button variant="ghost" size="sm" className="h-7 w-7 p-0 shrink-0">
+                                    <IconDotsVertical className="size-4" />
+                                  </Button>
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent align="end">
+                                  <DropdownMenuItem onClick={() => handleViewKiroDetail(account)}>
+                                    <IconChartBar className="size-4 mr-2" />
+                                    详情
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem onClick={() => handleCopyKiroCredentials(account)}>
+                                    <IconCopy className="size-4 mr-2" />
+                                    复制凭证
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem onClick={() => handleRenameKiro(account)}>
+                                    <IconEdit className="size-4 mr-2" />
+                                    重命名
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem onClick={() => handleToggleKiroStatus(account)}>
+                                    {account.status === 1 ? (
+                                      <><IconToggleLeft className="size-4 mr-2" />禁用</>
+                                    ) : (
+                                      <><IconToggleRight className="size-4 mr-2" />启用</>
+                                    )}
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem
+                                    onClick={() => handleDeleteKiro(account.account_id)}
+                                    className="text-red-600"
+                                  >
+                                    <IconTrash className="size-4 mr-2" />
+                                    删除
+                                  </DropdownMenuItem>
+                                </DropdownMenuContent>
+                              </DropdownMenu>
+                            </div>
+                            
+                            {/* 余额信息 */}
+                            {balance ? (
+                              <div className="space-y-2">
+                                <div className="flex items-end justify-between">
+                                  <div>
+                                    <p className="text-[10px] text-muted-foreground mb-0.5">可用余额</p>
+                                    <span className={cn(
+                                      "text-xl font-bold font-mono",
+                                      isLowBalance ? "text-orange-500" : "text-green-500"
+                                    )}>
+                                      ${availableAmount.toFixed(0)}
+                                    </span>
+                                  </div>
+                                  <div className="text-right">
+                                    <p className="text-[10px] text-muted-foreground mb-0.5">总额度</p>
+                                    <span className="text-sm font-mono text-muted-foreground">
+                                      ${balance.total_limit.toFixed(0)}
+                                    </span>
+                                  </div>
+                                </div>
+                                <div className="h-1.5 bg-muted rounded-full overflow-hidden">
+                                  <div 
+                                    className={cn(
+                                      "h-full rounded-full transition-all",
+                                      usagePercent > 90 ? "bg-red-500" :
+                                      usagePercent > 80 ? "bg-orange-500" :
+                                      usagePercent > 60 ? "bg-yellow-500" : "bg-green-500"
+                                    )}
+                                    style={{ width: `${Math.min(usagePercent, 100)}%` }}
+                                  />
+                                </div>
+                                <div className="flex justify-between text-[10px] text-muted-foreground">
+                                  <span>已用 ${balance.current_usage.toFixed(2)}</span>
+                                  {balance.reset_date && <span>重置 {new Date(balance.reset_date).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })}</span>}
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="flex items-center justify-center py-4">
+                                <MorphingSquare className="size-4" />
+                                <span className="text-xs text-muted-foreground ml-2">加载中...</span>
+                              </div>
+                            )}
+                          </CardContent>
+                        </Card>
+                      );
+                    })}
+                  </div>
                 </div>
               )}
-            </CardContent>
-          </Card>
+            </div>
         )}
 
         {/* Qwen账号列表 */}
@@ -3673,6 +3778,45 @@ export default function AccountsPage() {
                           {new Date(detailBalance.free_trial.expiry).toLocaleDateString('zh-CN')}
                         </p>
                       </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Bonus 详情 */}
+                {detailBalance.bonus_details && detailBalance.bonus_details.length > 0 && (
+                  <div className="space-y-3">
+                    <h3 className="text-sm font-semibold text-muted-foreground">Bonus 详情</h3>
+                    <div className="space-y-3">
+                      {detailBalance.bonus_details.map((bonus: any, index: number) => (
+                        <div key={index} className="p-3 rounded-lg border bg-muted/30">
+                          <div className="flex items-center justify-between mb-2">
+                            <span className="font-medium text-sm">{bonus.name || bonus.type}</span>
+                            <Badge variant={bonus.status === 'active' ? 'default' : 'secondary'} className="text-xs">
+                              {bonus.status === 'active' ? '有效' : bonus.status}
+                            </Badge>
+                          </div>
+                          {bonus.description && (
+                            <p className="text-xs text-muted-foreground mb-2">{bonus.description}</p>
+                          )}
+                          <div className="grid grid-cols-3 gap-2 text-xs">
+                            <div>
+                              <span className="text-muted-foreground">可用: </span>
+                              <span className="font-mono text-blue-600">${bonus.available?.toFixed(2) || '0.00'}</span>
+                            </div>
+                            <div>
+                              <span className="text-muted-foreground">已用: </span>
+                              <span className="font-mono">${bonus.usage?.toFixed(2) || '0.00'}</span>
+                            </div>
+                            <div>
+                              <span className="text-muted-foreground">限额: </span>
+                              <span className="font-mono">${bonus.limit?.toFixed(2) || '0.00'}</span>
+                            </div>
+                          </div>
+                          {bonus.code && (
+                            <p className="text-xs text-muted-foreground mt-1">Code: {bonus.code}</p>
+                          )}
+                        </div>
+                      ))}
                     </div>
                   </div>
                 )}

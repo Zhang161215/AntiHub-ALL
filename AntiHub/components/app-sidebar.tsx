@@ -6,7 +6,8 @@ import {
   IconDashboard,
   IconListDetails,
   IconSettings,
-  IconUserCircle
+  IconUserCircle,
+  IconHelp
 } from "@tabler/icons-react"
 import { NavMain } from "@/components/nav-main"
 import { NavSecondary } from "@/components/nav-secondary"
@@ -52,9 +53,14 @@ const data = {
       icon: IconSettings,
     },
     {
-      title: "用户信息",
+      title: "个人资料",
       url: "/dashboard/profile",
       icon: IconUserCircle,
+    },
+    {
+      title: "帮助",
+      url: "/dashboard/help",
+      icon: IconHelp,
     }
   ]
 }

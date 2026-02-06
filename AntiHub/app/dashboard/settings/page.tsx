@@ -14,10 +14,15 @@ import {
   saveCodexFallbackConfig,
   upsertKiroSubscriptionModelRule,
   clearCodexFallbackConfig,
+  getKiroModelMappings,
+  addKiroModelMapping,
+  deleteKiroModelMapping,
+  resetKiroModelMappings,
   type KiroSubscriptionModelRule,
   type OpenAIModel,
   type PluginAPIKey,
   type UserResponse,
+  type KiroModelMappings,
 } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -82,6 +87,15 @@ export default function SettingsPage() {
   const [isKiroConfigLoading, setIsKiroConfigLoading] = useState(false);
   const [savingSubscription, setSavingSubscription] = useState<string | null>(null);
   const [newSubscription, setNewSubscription] = useState('');
+
+  // Kiro 模型映射状态
+  const [modelMappings, setModelMappings] = useState<KiroModelMappings>({});
+  const [isModelMappingsLoading, setIsModelMappingsLoading] = useState(false);
+  const [newMappingFrontend, setNewMappingFrontend] = useState('');
+  const [newMappingKiro, setNewMappingKiro] = useState('');
+  const [isAddingMapping, setIsAddingMapping] = useState(false);
+  const [deletingMapping, setDeletingMapping] = useState<string | null>(null);
+  const [isResettingMappings, setIsResettingMappings] = useState(false);
 
   const [apiEndpoint, setApiEndpoint] = useState(() => getPublicApiBaseUrl());
 
@@ -178,6 +192,99 @@ export default function SettingsPage() {
       }
     } finally {
       setIsKiroConfigLoading(false);
+    }
+  };
+
+  // 加载模型映射
+  const loadModelMappings = async () => {
+    setIsModelMappingsLoading(true);
+    try {
+      const mappings = await getKiroModelMappings();
+      setModelMappings(mappings);
+    } catch (err) {
+      toasterRef.current?.show({
+        title: '加载失败',
+        message: err instanceof Error ? err.message : '获取模型映射失败',
+        variant: 'error',
+        position: 'top-right',
+      });
+    } finally {
+      setIsModelMappingsLoading(false);
+    }
+  };
+
+  // 添加模型映射
+  const handleAddMapping = async () => {
+    if (!newMappingFrontend.trim() || !newMappingKiro.trim()) return;
+    setIsAddingMapping(true);
+    try {
+      const mappings = await addKiroModelMapping(newMappingFrontend.trim(), newMappingKiro.trim());
+      setModelMappings(mappings);
+      setNewMappingFrontend('');
+      setNewMappingKiro('');
+      toasterRef.current?.show({
+        title: '添加成功',
+        message: `已添加映射: ${newMappingFrontend} → ${newMappingKiro}`,
+        variant: 'success',
+        position: 'top-right',
+      });
+    } catch (err) {
+      toasterRef.current?.show({
+        title: '添加失败',
+        message: err instanceof Error ? err.message : '添加模型映射失败',
+        variant: 'error',
+        position: 'top-right',
+      });
+    } finally {
+      setIsAddingMapping(false);
+    }
+  };
+
+  // 删除模型映射
+  const handleDeleteMapping = async (frontendModel: string) => {
+    setDeletingMapping(frontendModel);
+    try {
+      const mappings = await deleteKiroModelMapping(frontendModel);
+      setModelMappings(mappings);
+      toasterRef.current?.show({
+        title: '删除成功',
+        message: `已删除映射: ${frontendModel}`,
+        variant: 'success',
+        position: 'top-right',
+      });
+    } catch (err) {
+      toasterRef.current?.show({
+        title: '删除失败',
+        message: err instanceof Error ? err.message : '删除模型映射失败',
+        variant: 'error',
+        position: 'top-right',
+      });
+    } finally {
+      setDeletingMapping(null);
+    }
+  };
+
+  // 重置模型映射
+  const handleResetMappings = async () => {
+    setIsResettingMappings(true);
+    try {
+      const mappings = await resetKiroModelMappings();
+      setModelMappings(mappings);
+      toasterRef.current?.show({
+        title: '重置成功',
+        message: '已重置为默认模型映射',
+        variant: 'success',
+        position: 'top-right',
+      });
+    } catch (err) {
+      toasterRef.current?.show({
+        title: '重置失败',
+        message: err instanceof Error ? err.message : '重置模型映射失败',
+        variant: 'error',
+        position: 'top-right',
+      });
+    } finally {
+      setIsResettingMappings(false);
     }
   };
 
@@ -296,6 +403,7 @@ export default function SettingsPage() {
 
         if (userData.trust_level >= 3) {
           await loadKiroAdminConfig();
+          await loadModelMappings();
         }
       } finally {
         setIsLoading(false);
@@ -900,6 +1008,109 @@ export default function SettingsPage() {
             </div>
           </CardContent>
         </Card>
+
+        {/* Kiro 模型映射管理 */}
+        {isAdmin && (
+          <Card className="mt-6">
+            <CardHeader>
+              <div className="flex items-center justify-between gap-3">
+                <div className="space-y-1.5">
+                  <CardTitle className="flex items-center gap-2">
+                    Kiro 模型映射
+                  </CardTitle>
+                  <CardDescription>
+                    配置前端模型名到 Kiro 真实模型名的映射关系
+                  </CardDescription>
+                </div>
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={loadModelMappings}
+                    disabled={isModelMappingsLoading}
+                  >
+                    {isModelMappingsLoading ? '刷新中' : '刷新'}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleResetMappings}
+                    disabled={isResettingMappings}
+                  >
+                    {isResettingMappings ? '重置中' : '重置默认'}
+                  </Button>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {/* 添加新映射 */}
+              <div className="flex gap-2 items-end">
+                <div className="flex-1 space-y-1">
+                  <Label className="text-xs">前端模型名</Label>
+                  <Input
+                    value={newMappingFrontend}
+                    onChange={(e) => setNewMappingFrontend(e.target.value)}
+                    placeholder="例如: claude-opus-4-6-thinking"
+                    disabled={isAddingMapping}
+                  />
+                </div>
+                <div className="text-muted-foreground px-2 pb-2">→</div>
+                <div className="flex-1 space-y-1">
+                  <Label className="text-xs">Kiro 模型名</Label>
+                  <Input
+                    value={newMappingKiro}
+                    onChange={(e) => setNewMappingKiro(e.target.value)}
+                    placeholder="例如: claude-opus-4.6"
+                    disabled={isAddingMapping}
+                  />
+                </div>
+                <Button
+                  onClick={handleAddMapping}
+                  disabled={!newMappingFrontend.trim() || !newMappingKiro.trim() || isAddingMapping}
+                >
+                  {isAddingMapping ? '添加中' : '添加'}
+                </Button>
+              </div>
+
+              {/* 映射列表 */}
+              {isModelMappingsLoading ? (
+                <div className="flex items-center justify-center py-8">
+                  <MorphingSquare message="加载映射..." />
+                </div>
+              ) : Object.keys(modelMappings).length > 0 ? (
+                <div className="border rounded-lg divide-y">
+                  {Object.entries(modelMappings).sort(([a], [b]) => a.localeCompare(b)).map(([frontend, kiro]) => (
+                    <div key={frontend} className="flex items-center justify-between px-4 py-2 hover:bg-muted/50">
+                      <div className="flex items-center gap-3 flex-1 min-w-0">
+                        <code className="text-sm bg-muted px-2 py-0.5 rounded truncate max-w-[200px]" title={frontend}>
+                          {frontend}
+                        </code>
+                        <span className="text-muted-foreground">→</span>
+                        <code className="text-sm bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 px-2 py-0.5 rounded truncate max-w-[150px]" title={kiro}>
+                          {kiro}
+                        </code>
+                      </div>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleDeleteMapping(frontend)}
+                        disabled={deletingMapping === frontend}
+                        className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                      >
+                        {deletingMapping === frontend ? '删除中' : <IconTrash className="size-4" />}
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-center py-8 text-muted-foreground">
+                  <p>暂无模型映射配置</p>
+                  <p className="text-sm mt-1">点击"重置默认"加载默认映射</p>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
 
         {isAdmin && (
           <Card className="mt-6">

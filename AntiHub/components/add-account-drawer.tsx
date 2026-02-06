@@ -3358,7 +3358,53 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
                   </div>
 
                   <div className="border-t pt-6 space-y-3">
-                    <Label className="text-base font-semibold">批量导入（JSON）</Label>
+                    <div className="flex items-center justify-between">
+                      <Label className="text-base font-semibold">批量导入（JSON）</Label>
+                      <div className="flex gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => {
+                            const socialTemplate = JSON.stringify([
+                              { refreshToken: "your_refresh_token_here", region: "us-east-1" }
+                            ], null, 2);
+                            const blob = new Blob([socialTemplate], { type: 'application/json' });
+                            const url = URL.createObjectURL(blob);
+                            const a = document.createElement('a');
+                            a.href = url;
+                            a.download = 'kiro_social_template.json';
+                            a.click();
+                            URL.revokeObjectURL(url);
+                          }}
+                        >
+                          Social 模板
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => {
+                            const idcTemplate = JSON.stringify([
+                              {
+                                refreshToken: "your_refresh_token_here",
+                                clientId: "your_client_id",
+                                clientSecret: "your_client_secret",
+                                region: "us-east-1",
+                                authMethod: "IdC"
+                              }
+                            ], null, 2);
+                            const blob = new Blob([idcTemplate], { type: 'application/json' });
+                            const url = URL.createObjectURL(blob);
+                            const a = document.createElement('a');
+                            a.href = url;
+                            a.download = 'kiro_idc_template.json';
+                            a.click();
+                            URL.revokeObjectURL(url);
+                          }}
+                        >
+                          IdC 模板
+                        </Button>
+                      </div>
+                    </div>
                     <p className="text-sm text-muted-foreground">
                       支持 Social 和 IdC (Enterprise) 两种格式，自动识别。可粘贴 JSON 数组或多个对象用逗号分隔。
                       <br />

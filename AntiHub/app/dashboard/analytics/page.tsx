@@ -55,7 +55,7 @@ import { Gemini, Claude, OpenAI, Qwen } from '@lobehub/icons';
 import Toaster, { ToasterRef } from '@/components/ui/toast';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { IconPlus, IconTrash, IconRefresh } from '@tabler/icons-react';
+import { IconPlus, IconTrash, IconRefresh, IconActivity, IconChartBar as IconChartBarTabler } from '@tabler/icons-react';
 
 export default function AnalyticsPage() {
   const toasterRef = useRef<ToasterRef>(null);
@@ -298,35 +298,6 @@ export default function AnalyticsPage() {
   return (
     <div className="flex flex-col gap-4 py-4 md:gap-6 md:py-6">
       <div className="px-4 lg:px-6">
-        {/* 页面标题和配置选择 */}
-        <div className="flex items-center justify-between mb-6">
-          <div></div>
-          <Select
-            value={activeTab}
-            onValueChange={(value: 'antigravity' | 'kiro' | 'qwen' | 'codex' | 'gemini-cli' | 'zai-tts' | 'zai-image') => {
-              setActiveTab(value);
-              if (value === 'qwen' || value === 'codex' || value === 'gemini-cli' || value === 'zai-tts' || value === 'zai-image') setRequestCurrentPage(1);
-            }}
-          >
-            <SelectTrigger className="w-[160px] h-9">
-              <SelectValue>
-                <span className="flex items-center gap-2">
-                  <img src="/kiro.png" alt="" className="size-4 rounded" />
-                  Kiro
-                </span>
-              </SelectValue>
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="kiro">
-                <span className="flex items-center gap-2">
-                  <img src="/kiro.png" alt="" className="size-4 rounded" />
-                  Kiro
-                </span>
-              </SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-
         <Toaster ref={toasterRef} defaultPosition="top-right" />
 
         {/* 反重力配额列表 */}
@@ -714,48 +685,53 @@ export default function AnalyticsPage() {
         {/* Kiro 消费统计 */}
         {activeTab === 'kiro' && (
           <>
-            {/* 总体统计 */}
-            <Card className="mb-6">
-              <CardHeader>
-                <CardTitle>消费统计</CardTitle>
-              </CardHeader>
-              <CardContent>
-                {kiroStats && kiroStats.total_credit !== undefined ? (
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div className="space-y-2">
-                      <p className="text-sm text-muted-foreground">总请求数</p>
-                      <p className="text-2xl font-bold">{kiroStats.total_requests || '0'}</p>
+            {/* 总体统计 - 精简卡片 */}
+            <div className="grid grid-cols-2 gap-3 mb-4">
+              <Card className="bg-gradient-to-br from-blue-500/5 to-transparent">
+                <CardContent className="pt-4 pb-3">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 rounded-lg bg-blue-500/10">
+                      <IconActivity className="size-4 text-blue-500" />
                     </div>
-                    <div className="space-y-2">
-                      <p className="text-sm text-muted-foreground">总消费额度</p>
-                      <p className="text-2xl font-bold">${parseFloat(kiroStats.total_credit || '0').toFixed(4)}</p>
+                    <div>
+                      <p className="text-[10px] text-muted-foreground">总请求数</p>
+                      <p className="text-xl font-bold">{kiroStats?.total_requests || '0'}</p>
                     </div>
                   </div>
-                ) : (
-                  <div className="text-center py-12 text-muted-foreground">
-                    <p className="text-sm">暂无消费数据</p>
+                </CardContent>
+              </Card>
+              <Card className="bg-gradient-to-br from-green-500/5 to-transparent">
+                <CardContent className="pt-4 pb-3">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 rounded-lg bg-green-500/10">
+                      <IconChartBarTabler className="size-4 text-green-500" />
+                    </div>
+                    <div>
+                      <p className="text-[10px] text-muted-foreground">总消费额度</p>
+                      <p className="text-xl font-bold">${parseFloat(kiroStats?.total_credit || '0').toFixed(2)}</p>
+                    </div>
                   </div>
-                )}
-              </CardContent>
-            </Card>
+                </CardContent>
+              </Card>
+            </div>
 
             {/* 可用模型（从 Kiro 获取的完整列表） */}
-            <Card className="mb-6">
-              <CardHeader>
-                <CardTitle>可用模型</CardTitle>
-                <CardDescription>
-                  从 Kiro 获取的完整模型列表（共 {kiroModels.length} 个）
-                </CardDescription>
+            <Card className="mb-4">
+              <CardHeader className="py-3">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-sm font-medium">可用模型</CardTitle>
+                  <Badge variant="secondary" className="text-[10px]">{kiroModels.length} 个</Badge>
+                </div>
               </CardHeader>
-              <CardContent>
+              <CardContent className="pt-0">
                 {kiroModels.length === 0 ? (
-                  <div className="text-center py-8 text-muted-foreground">
-                    <p className="text-sm">暂无可用模型或加载失败</p>
+                  <div className="text-center py-4 text-muted-foreground">
+                    <p className="text-xs">暂无可用模型或加载失败</p>
                   </div>
                 ) : (
-                  <div className="flex flex-wrap gap-2">
+                  <div className="flex flex-wrap gap-1.5">
                     {kiroModels.map((model) => (
-                      <Badge key={model.id} variant="secondary" className="font-mono text-sm py-1 px-3">
+                      <Badge key={model.id} variant="outline" className="font-mono text-[10px] py-0.5 px-2">
                         {model.id}
                       </Badge>
                     ))}
@@ -765,18 +741,17 @@ export default function AnalyticsPage() {
             </Card>
 
             {/* 模型映射 */}
-            <Card className="mb-6">
-              <CardHeader>
+            <Card className="mb-4">
+              <CardHeader className="py-3">
                 <div className="flex items-center justify-between">
-                  <div>
-                    <CardTitle>模型映射</CardTitle>
-                    <CardDescription>
-                      前端模型名 → Kiro 真实模型名（共 {Object.keys(kiroModelMappings).length} 个映射）
-                    </CardDescription>
+                  <div className="flex items-center gap-2">
+                    <CardTitle className="text-sm font-medium">模型映射</CardTitle>
+                    <Badge variant="secondary" className="text-[10px]">{Object.keys(kiroModelMappings).length} 个</Badge>
                   </div>
                   <Button
-                    variant="outline"
+                    variant="ghost"
                     size="sm"
+                    className="h-7 text-xs"
                     onClick={async () => {
                       try {
                         const mappings = await resetKiroModelMappings();
@@ -797,27 +772,27 @@ export default function AnalyticsPage() {
                       }
                     }}
                   >
-                    <IconRefresh className="size-4 mr-1" />
-                    重置默认
+                    <IconRefresh className="size-3 mr-1" />
+                    重置
                   </Button>
                 </div>
               </CardHeader>
-              <CardContent>
-                <div className="space-y-3">
+              <CardContent className="pt-0">
+                <div className="space-y-2">
                   {/* 现有映射列表 */}
                   {Object.entries(kiroModelMappings).map(([frontendModel, kiroModel]) => (
-                    <div key={frontendModel} className="flex items-center gap-2 text-sm">
-                      <Badge variant="outline" className="font-mono">
+                    <div key={frontendModel} className="flex items-center gap-1.5 text-xs">
+                      <Badge variant="outline" className="font-mono text-[10px] py-0 px-1.5">
                         {frontendModel}
                       </Badge>
-                      <span className="text-muted-foreground">→</span>
-                      <Badge variant="secondary" className="font-mono">
+                      <span className="text-muted-foreground text-[10px]">→</span>
+                      <Badge variant="secondary" className="font-mono text-[10px] py-0 px-1.5">
                         {kiroModel}
                       </Badge>
                       <Button
                         variant="ghost"
                         size="sm"
-                        className="h-6 w-6 p-0 ml-auto text-destructive hover:text-destructive"
+                        className="h-5 w-5 p-0 ml-auto text-destructive hover:text-destructive"
                         onClick={async () => {
                           try {
                             const mappings = await deleteKiroModelMapping(frontendModel);
@@ -838,27 +813,27 @@ export default function AnalyticsPage() {
                           }
                         }}
                       >
-                        <IconTrash className="size-3" />
+                        <IconTrash className="size-2.5" />
                       </Button>
                     </div>
                   ))}
                   
                   {/* 添加新映射 */}
-                  <div className="flex items-center gap-2 pt-3 border-t">
+                  <div className="flex items-center gap-1.5 pt-2 border-t">
                     <Input
                       placeholder="前端模型名"
                       value={newFrontendModel}
                       onChange={(e) => setNewFrontendModel(e.target.value)}
-                      className="font-mono text-sm h-8 w-[200px]"
+                      className="font-mono text-xs h-7 w-[160px]"
                     />
-                    <span className="text-muted-foreground">→</span>
+                    <span className="text-muted-foreground text-[10px]">→</span>
                     <Select value={newKiroModel} onValueChange={setNewKiroModel}>
-                      <SelectTrigger className="font-mono text-sm h-8 w-[220px]">
+                      <SelectTrigger className="font-mono text-xs h-7 w-[180px]">
                         <SelectValue placeholder="选择 Kiro 模型" />
                       </SelectTrigger>
                       <SelectContent>
                         {kiroModels.map((model) => (
-                          <SelectItem key={model.id} value={model.id}>
+                          <SelectItem key={model.id} value={model.id} className="text-xs">
                             {model.display_name || model.id}
                           </SelectItem>
                         ))}
@@ -867,6 +842,7 @@ export default function AnalyticsPage() {
                     <Button
                       variant="outline"
                       size="sm"
+                      className="h-7 w-7 p-0"
                       disabled={!newFrontendModel.trim() || !newKiroModel.trim() || isAddingMapping}
                       onClick={async () => {
                         if (!newFrontendModel.trim() || !newKiroModel.trim()) return;
@@ -894,7 +870,7 @@ export default function AnalyticsPage() {
                         }
                       }}
                     >
-                      <IconPlus className="size-4" />
+                      <IconPlus className="size-3" />
                     </Button>
                   </div>
                 </div>
@@ -903,17 +879,17 @@ export default function AnalyticsPage() {
 
             {/* 使用记录 */}
             <Card>
-              <CardHeader>
-                <CardTitle>使用记录</CardTitle>
-                <CardDescription>
-                  共 {totalRecords} 条使用记录
-                </CardDescription>
+              <CardHeader className="py-3">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-sm font-medium">使用记录</CardTitle>
+                  <Badge variant="secondary" className="text-[10px]">{totalRecords} 条</Badge>
+                </div>
               </CardHeader>
-              <CardContent>
+              <CardContent className="pt-0">
                 {kiroLogs.length === 0 ? (
-                  <div className="text-center py-12 text-muted-foreground">
-                    <p className="text-lg mb-2">暂无使用记录</p>
-                    <p className="text-sm">开始使用Kiro账号进行对话吧！</p>
+                  <div className="text-center py-8 text-muted-foreground">
+                    <p className="text-sm mb-1">暂无使用记录</p>
+                    <p className="text-xs">开始使用 Kiro 账号进行对话吧！</p>
                   </div>
                 ) : (
                   <>
