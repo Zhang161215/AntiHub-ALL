@@ -123,7 +123,7 @@ export default function AccountsPage() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [refreshingCookieId, setRefreshingCookieId] = useState<string | null>(null);
   const [refreshingCodexAccountId, setRefreshingCodexAccountId] = useState<number | null>(null);
-  const [activeTab, setActiveTab] = useState<'antigravity' | 'kiro' | 'qwen' | 'codex' | 'gemini' | 'zai-tts' | 'zai-image'>('antigravity');
+  const [activeTab, setActiveTab] = useState<'antigravity' | 'kiro' | 'qwen' | 'codex' | 'gemini' | 'zai-tts' | 'zai-image'>('kiro');
 
   // 添加账号 Drawer 状态
   const [isAddDrawerOpen, setIsAddDrawerOpen] = useState(false);
@@ -1707,86 +1707,17 @@ export default function AccountsPage() {
               <Select value={activeTab} onValueChange={(value: 'antigravity' | 'kiro' | 'qwen' | 'codex' | 'gemini' | 'zai-tts' | 'zai-image') => setActiveTab(value)}>
                 <SelectTrigger className="w-[140px] sm:w-[160px] h-9">
                   <SelectValue>
-                    {activeTab === 'antigravity' ? (
-                      <span className="flex items-center gap-2">
-                        <img src="/antigravity-logo.png" alt="" className="size-4 rounded" />
-                        <span className="hidden sm:inline">Antigravity</span>
-                        <span className="sm:hidden">Anti</span>
-                      </span>
-                    ) : activeTab === 'kiro' ? (
-                      <span className="flex items-center gap-2">
-                        <img src="/kiro.png" alt="" className="size-4 rounded" />
-                        Kiro
-                      </span>
-                    ) : activeTab === 'qwen' ? (
-                      <span className="flex items-center gap-2">
-                        <Qwen className="size-4" />
-                        Qwen
-                      </span>
-                    ) : activeTab === 'zai-tts' ? (
-                      <span className="flex items-center gap-2">
-                        <OpenAI className="size-4" />
-                        ZAI TTS
-                      </span>
-                    ) : activeTab === 'zai-image' ? (
-                      <span className="flex items-center gap-2">
-                        <OpenAI className="size-4" />
-                        ZAI Image
-                      </span>
-                    ) : activeTab === 'gemini' ? (
-                      <span className="flex items-center gap-2">
-                        <Gemini className="size-4" />
-                        GeminiCLI
-                      </span>
-                    ) : (
-                      <span className="flex items-center gap-2">
-                        <OpenAI className="size-4" />
-                        Codex
-                      </span>
-                    )}
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="antigravity">
-                    <span className="flex items-center gap-2">
-                      <img src="/antigravity-logo.png" alt="" className="size-4 rounded" />
-                      Antigravity
-                    </span>
-                  </SelectItem>
-                  <SelectItem value="kiro">
                     <span className="flex items-center gap-2">
                       <img src="/kiro.png" alt="" className="size-4 rounded" />
                       Kiro
                     </span>
-                  </SelectItem>
-                  <SelectItem value="qwen">
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="kiro">
                     <span className="flex items-center gap-2">
-                      <Qwen className="size-4" />
-                      Qwen
-                    </span>
-                  </SelectItem>
-                  <SelectItem value="zai-tts">
-                    <span className="flex items-center gap-2">
-                      <OpenAI className="size-4" />
-                      ZAI TTS
-                    </span>
-                  </SelectItem>
-                  <SelectItem value="zai-image">
-                    <span className="flex items-center gap-2">
-                      <OpenAI className="size-4" />
-                      ZAI Image
-                    </span>
-                  </SelectItem>
-                  <SelectItem value="codex">
-                    <span className="flex items-center gap-2">
-                      <OpenAI className="size-4" />
-                      Codex
-                    </span>
-                  </SelectItem>
-                  <SelectItem value="gemini">
-                    <span className="flex items-center gap-2">
-                      <Gemini className="size-4" />
-                      GeminiCLI
+                      <img src="/kiro.png" alt="" className="size-4 rounded" />
+                      Kiro
                     </span>
                   </SelectItem>
                 </SelectContent>

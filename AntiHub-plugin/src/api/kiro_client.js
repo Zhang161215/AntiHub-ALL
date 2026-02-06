@@ -1,5 +1,6 @@
 import https from 'https';
 import crypto from 'crypto';
+import fs from 'fs';
 import logger from '../utils/logger.js';
 import kiroService from '../services/kiro.service.js';
 import kiroAccountService from '../services/kiro_account.service.js';
@@ -11,6 +12,28 @@ import kiroSubscriptionModelService from '../services/kiro_subscription_model.se
  * 处理CodeWhisperer API调用和流式响应
  */
 class KiroClient {
+  constructor() {
+    // 余额更新节流：记录每个账号的最后更新时间
+    this._balanceUpdateTimestamps = new Map();
+    // 余额更新最小间隔（毫秒）- 同一账号60秒内只更新一次
+    this._balanceUpdateInterval = 60 * 1000;
+  }
+
+  /**
+   * 检查是否应该更新余额（节流）
+   * @param {string} accountId - 账号ID
+   * @returns {boolean} 是否应该更新
+   */
+  _shouldUpdateBalance(accountId) {
+    const lastUpdate = this._balanceUpdateTimestamps.get(accountId);
+    const now = Date.now();
+    if (!lastUpdate || (now - lastUpdate) >= this._balanceUpdateInterval) {
+      this._balanceUpdateTimestamps.set(accountId, now);
+      return true;
+    }
+    return false;
+  }
+
   /**
    * 获取可用的Kiro账号（带token刷新）
    * @param {string} user_id - 用户ID
@@ -96,7 +119,7 @@ class KiroClient {
     logger.info(`[${requestId}] 开始Kiro请求: model=${model}, user_id=${user_id}, account_id=${account.account_id}`);
 
     // 转换请求格式
-    const cwRequest = kiroService.convertToCodeWhispererRequest(messages, model, options);
+    const cwRequest = await kiroService.convertToCodeWhispererRequest(messages, model, options);
     // AWS IMA / IdC 账号通常需要 profileArn（Social 账号也可能返回该字段）
     if (typeof account.profile_arn === 'string' && account.profile_arn.trim()) {
       cwRequest.profileArn = account.profile_arn.trim();
@@ -176,24 +199,97 @@ class KiroClient {
     }
 
     const payload = { ...cwRequest };
+    
+    // 对 modelId 进行映射（使用数据库映射表）
+    const currentModelId = payload?.conversationState?.currentMessage?.userInputMessage?.modelId;
+    if (currentModelId) {
+      const mappedModelId = await kiroService.getKiroModelId(currentModelId);
+      if (payload.conversationState?.currentMessage?.userInputMessage) {
+        payload.conversationState.currentMessage.userInputMessage.modelId = mappedModelId;
+        logger.info(`[${requestId}] 模型映射: ${currentModelId} -> ${mappedModelId}`);
+      }
+    }
 
     // Kiro: toolSpecification.description 不能为空，否则会 400
-    try {
-      const tools =
-        payload?.conversationState?.currentMessage?.userInputMessage?.userInputMessageContext?.tools;
-      if (Array.isArray(tools)) {
-        for (const t of tools) {
-          const spec = t?.toolSpecification || t?.tool_specification;
-          if (spec && (spec.description == null || String(spec.description).trim() === '')) {
-            spec.description = '当前工具无说明';
-          }
+    const ensureToolDescription = (tools) => {
+      if (!Array.isArray(tools)) return;
+      for (const t of tools) {
+        const spec = t?.toolSpecification || t?.tool_specification;
+        if (spec && (spec.description == null || String(spec.description).trim() === '')) {
+          spec.description = '当前工具无说明';
         }
       }
-    } catch {}
+    };
+
+    try {
+      // 处理 currentMessage 中的 tools
+      ensureToolDescription(
+        payload?.conversationState?.currentMessage?.userInputMessage?.userInputMessageContext?.tools
+      );
+
+      // 处理 history 中的 tools（每条历史消息都可能有 tools）
+      const history = payload?.conversationState?.history;
+      if (Array.isArray(history)) {
+        for (const msg of history) {
+          ensureToolDescription(msg?.userInputMessage?.userInputMessageContext?.tools);
+        }
+        
+        // Kiro 要求 history 必须 user/assistant 交替，合并连续的同角色消息
+        const normalizedHistory = [];
+        for (const msg of history) {
+          const isUser = !!msg.userInputMessage;
+          const lastMsg = normalizedHistory[normalizedHistory.length - 1];
+          const lastIsUser = lastMsg && !!lastMsg.userInputMessage;
+          
+          if (normalizedHistory.length === 0 || isUser !== lastIsUser) {
+            normalizedHistory.push(msg);
+          } else if (isUser && lastIsUser) {
+            // 合并连续 user 消息：把内容追加到上一条
+            const lastContent = lastMsg.userInputMessage.content || '';
+            const currentContent = msg.userInputMessage.content || '';
+            if (currentContent) {
+              lastMsg.userInputMessage.content = lastContent ? `${lastContent}\n${currentContent}` : currentContent;
+            }
+            // 合并 toolResults
+            const lastToolResults = lastMsg.userInputMessage.userInputMessageContext?.toolResults || [];
+            const currentToolResults = msg.userInputMessage.userInputMessageContext?.toolResults || [];
+            if (currentToolResults.length > 0) {
+              if (!lastMsg.userInputMessage.userInputMessageContext) {
+                lastMsg.userInputMessage.userInputMessageContext = {};
+              }
+              lastMsg.userInputMessage.userInputMessageContext.toolResults = [...lastToolResults, ...currentToolResults];
+            }
+          } else if (!isUser && !lastIsUser) {
+            // 合并连续 assistant 消息
+            const lastContent = lastMsg.assistantResponseMessage.content || '';
+            const currentContent = msg.assistantResponseMessage.content || '';
+            if (currentContent) {
+              lastMsg.assistantResponseMessage.content = lastContent ? `${lastContent}\n${currentContent}` : currentContent;
+            }
+          }
+        }
+        payload.conversationState.history = normalizedHistory;
+        
+        if (normalizedHistory.length !== history.length) {
+          logger.info(`[${requestId}] 合并了连续同角色消息: ${history.length} -> ${normalizedHistory.length}`);
+        }
+      }
+    } catch (e) {
+      logger.warn(`[${requestId}] 处理空 tool description 时出错: ${e.message}`);
+    }
     if (typeof account.profile_arn === 'string' && account.profile_arn.trim()) {
       payload.profileArn = account.profile_arn.trim();
     }
     const requestBody = JSON.stringify(payload);
+
+    // DEBUG: dump 请求关键信息排查 400
+    const cs = payload?.conversationState;
+    const cm = cs?.currentMessage?.userInputMessage;
+    const toolsCount = cm?.userInputMessageContext?.tools?.length || 0;
+    logger.info(`[${requestId}] DEBUG payload: modelId=${cm?.modelId}, tools_count=${toolsCount}, history_count=${cs?.history?.length || 0}, content_len=${cm?.content?.length || 0}`);
+    
+    fs.writeFileSync(`/tmp/kiro_request_${requestId}.json`, JSON.stringify(payload, null, 2));
+    logger.info(`[${requestId}] DEBUG request dumped to /tmp/kiro_request_${requestId}.json`);
 
     return new Promise((resolve, reject) => {
       const headers = kiroService.getCodeWhispererHeaders(account.access_token, account.machineid, account.region);
@@ -396,6 +492,7 @@ class KiroClient {
     if (message.name && message.toolUseId) {
       // Anthropic 格式: { name: "WebSearch", toolUseId: "xxx", input: {...} }
       // 转换为 OpenAI 流式格式
+      logger.info(`[${requestId}] [tool-call] 收到工具调用: name=${message.name}, toolUseId=${message.toolUseId}, hasInput=${!!message.input}`);
       
       // 获取或分配工具调用索引
       let toolCallIndex;
@@ -428,8 +525,36 @@ class KiroClient {
         return;
       }
       
-      // 将 input 对象转换为 JSON 字符串，模拟流式传输
-      const args = typeof message.input === 'string' ? message.input : JSON.stringify(message.input);
+      // 将 input 转换为字符串
+      // 注意：Kiro 可能返回对象或字符串片段
+      let args;
+      if (typeof message.input === 'object' && message.input !== null) {
+        // 如果是完整对象，先做参数名映射再序列化
+        let normalizedInput = { ...message.input };
+        
+        // Edit 工具参数映射
+        if ('old_str' in normalizedInput) {
+          normalizedInput.old_string = normalizedInput.old_str;
+          delete normalizedInput.old_str;
+        }
+        if ('new_str' in normalizedInput) {
+          normalizedInput.new_string = normalizedInput.new_str;
+          delete normalizedInput.new_str;
+        }
+        
+        // 通用参数名映射（snake_case -> camelCase）
+        if ('file_path' in normalizedInput && !('filePath' in normalizedInput)) {
+          normalizedInput.filePath = normalizedInput.file_path;
+          delete normalizedInput.file_path;
+        }
+        
+        args = JSON.stringify(normalizedInput);
+      } else {
+        // 如果是字符串片段，直接使用（稍后在流式拼接后处理）
+        args = message.input;
+      }
+      
+      logger.info(`[${requestId}] [tool-call] 发送工具参数: toolUseId=${message.toolUseId}, args_length=${args.length}, args_preview=${args.substring(0, 200)}`);
       callback({
         type: 'tool_call_delta',
         tool_call_index: toolCallIndex,
@@ -479,14 +604,20 @@ class KiroClient {
       is_shared: contextInfo.is_shared
     });
 
-    // 2. 获取账号信息
+    // 2. 检查是否需要更新余额（节流：同一账号60秒内只更新一次）
+    if (!this._shouldUpdateBalance(contextInfo.account_id)) {
+      logger.info(`[${requestId}] 跳过余额更新（节流中）: account_id=${contextInfo.account_id}`);
+      return;
+    }
+
+    // 3. 获取账号信息
     const account = await kiroAccountService.getAccountById(contextInfo.account_id);
     if (!account) {
       logger.warn(`[${requestId}] 账号不存在，无法更新余额: account_id=${contextInfo.account_id}`);
       return;
     }
 
-    // 3. 从上游获取最新的使用量信息
+    // 4. 从上游获取最新的使用量信息
     try {
       logger.info(`[${requestId}] 从上游获取最新余额信息: account_id=${contextInfo.account_id}`);
       

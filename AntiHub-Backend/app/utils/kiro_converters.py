@@ -21,15 +21,17 @@ logger = logging.getLogger(__name__)
 DEFAULT_MAX_THINKING_LENGTH = 200000
 
 
-def is_thinking_enabled(thinking_config: Optional[Union[Dict[str, Any], bool, str]]) -> bool:
+def is_thinking_enabled(
+    thinking_config: Optional[Union[Dict[str, Any], bool, str]],
+) -> bool:
     """
     检测 thinking 是否启用。
 
     支持多种格式：
     - None: 未启用
     - bool: True/False
-    - str: "enabled"
-    - dict: {"type": "enabled", "budget_tokens": 10000}
+    - str: "enabled", "adaptive"
+    - dict: {"type": "enabled"}, {"type": "adaptive"}, {"budget_tokens": 10000}
 
     Args:
         thinking_config: thinking 配置
@@ -42,10 +44,11 @@ def is_thinking_enabled(thinking_config: Optional[Union[Dict[str, Any], bool, st
     if isinstance(thinking_config, bool):
         return thinking_config
     if isinstance(thinking_config, str):
-        return thinking_config.lower() == "enabled"
+        return thinking_config.lower() in ("enabled", "adaptive")
     if isinstance(thinking_config, dict):
         type_val = str(thinking_config.get("type", "")).lower()
-        if type_val == "enabled":
+        # 支持 enabled 和 adaptive 两种模式
+        if type_val in ("enabled", "adaptive"):
             return True
         budget = thinking_config.get("budget_tokens")
         if isinstance(budget, (int, float)) and budget > 0:
@@ -53,7 +56,9 @@ def is_thinking_enabled(thinking_config: Optional[Union[Dict[str, Any], bool, st
     return False
 
 
-def get_thinking_budget(thinking_config: Optional[Union[Dict[str, Any], bool, str]]) -> int:
+def get_thinking_budget(
+    thinking_config: Optional[Union[Dict[str, Any], bool, str]],
+) -> int:
     """
     获取 thinking 的 token 预算。
 
@@ -70,7 +75,9 @@ def get_thinking_budget(thinking_config: Optional[Union[Dict[str, Any], bool, st
     return DEFAULT_MAX_THINKING_LENGTH
 
 
-def generate_thinking_hint(thinking_config: Optional[Union[Dict[str, Any], bool, str]]) -> str:
+def generate_thinking_hint(
+    thinking_config: Optional[Union[Dict[str, Any], bool, str]],
+) -> str:
     """
     生成 thinking 模式的提示标签。
 
@@ -84,7 +91,9 @@ def generate_thinking_hint(thinking_config: Optional[Union[Dict[str, Any], bool,
     return f"<thinking_mode>enabled</thinking_mode>\n<max_thinking_length>{budget}</max_thinking_length>"
 
 
-def inject_thinking_hint(system_prompt: str, thinking_config: Optional[Union[Dict[str, Any], bool, str]]) -> str:
+def inject_thinking_hint(
+    system_prompt: str, thinking_config: Optional[Union[Dict[str, Any], bool, str]]
+) -> str:
     """
     将 thinking 提示注入到 system prompt 中。
 
@@ -129,7 +138,7 @@ def add_kiro_conversation_state(payload: Dict[str, Any]) -> None:
 
 def apply_thinking_to_request(
     openai_request: Dict[str, Any],
-    thinking_config: Optional[Union[Dict[str, Any], bool, str]] = None
+    thinking_config: Optional[Union[Dict[str, Any], bool, str]] = None,
 ) -> Dict[str, Any]:
     """
     将 thinking 配置应用到 OpenAI 格式的请求中。
@@ -161,7 +170,9 @@ def apply_thinking_to_request(
 
     # 没有 system prompt 时，创建一个仅包含 thinking hint 的 system 消息
     if not injected:
-        messages.insert(0, {"role": "system", "content": generate_thinking_hint(thinking_config)})
+        messages.insert(
+            0, {"role": "system", "content": generate_thinking_hint(thinking_config)}
+        )
         logger.debug("Inserted system prompt with thinking hint")
 
     return openai_request

@@ -36,7 +36,7 @@ import {
   DrawerHeader,
   DrawerTitle,
 } from '@/components/ui/drawer';
-import { IconExternalLink, IconCopy, IconX } from '@tabler/icons-react';
+import { IconExternalLink, IconCopy, IconX, IconUpload } from '@tabler/icons-react';
 import { Gemini, OpenAI, Qwen } from '@lobehub/icons';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
@@ -86,8 +86,8 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
   const kiroBatchCancelRef = useRef(false);
   const [step, setStep] = useState<
     'platform' | 'kiro_provider' | 'method' | 'authorize'
-  >('platform');
-  const [platform, setPlatform] = useState<'antigravity' | 'kiro' | 'qwen' | 'codex' | 'gemini' | 'zai-tts' | 'zai-image' | ''>('');
+  >('kiro_provider');
+  const [platform, setPlatform] = useState<'antigravity' | 'kiro' | 'qwen' | 'codex' | 'gemini' | 'zai-tts' | 'zai-image' | ''>('kiro');
   const [kiroProvider, setKiroProvider] = useState<'social' | 'aws_idc' | ''>('');
   const [loginMethod, setLoginMethod] = useState<'manual' | 'refresh_token' | ''>(''); // Antigravity 登录方式
   const [kiroLoginMethod, setKiroLoginMethod] = useState<'oauth' | 'refresh_token' | ''>('');
@@ -370,10 +370,8 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
 
   const handleBack = () => {
     if (step === 'kiro_provider') {
-      setStep('platform');
-      setKiroProvider('');
-      setKiroLoginMethod('');
-      setKiroAwsIdcMethod('');
+      // 第一步直接关闭抽屉
+      handleClose();
     } else if (step === 'method') {
       if (platform === 'kiro') {
         setStep('kiro_provider');
@@ -1026,6 +1024,88 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
         position: 'top-right',
       });
       throw err;
+    }
+  };
+
+  const handleKiroSsoCacheFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    let refreshToken = '';
+    let clientId = '';
+    let clientSecret = '';
+    let region = '';
+
+    const errors: string[] = [];
+
+    for (const file of Array.from(files)) {
+      try {
+        const text = await file.text();
+        const json = JSON.parse(text);
+
+        if (json.refreshToken && json.clientIdHash) {
+          refreshToken = json.refreshToken;
+          if (json.region) {
+            region = json.region;
+          }
+        }
+
+        if (json.clientId && json.clientSecret) {
+          clientId = json.clientId;
+          clientSecret = json.clientSecret;
+        }
+      } catch (err) {
+        errors.push(`${file.name}: ${err instanceof Error ? err.message : '解析失败'}`);
+      }
+    }
+
+    let filled = 0;
+    if (refreshToken) {
+      setKiroImportRefreshToken(refreshToken);
+      filled++;
+    }
+    if (clientId) {
+      setKiroImportClientId(clientId);
+      filled++;
+    }
+    if (clientSecret) {
+      setKiroImportClientSecret(clientSecret);
+      filled++;
+    }
+    if (region) {
+      setKiroAwsIdcRegion(region);
+      filled++;
+    }
+
+    e.target.value = '';
+
+    if (errors.length > 0) {
+      toasterRef.current?.show({
+        title: '部分文件解析失败',
+        message: errors.join('\n'),
+        variant: 'warning',
+        position: 'top-right',
+      });
+    } else if (filled === 0) {
+      toasterRef.current?.show({
+        title: '未找到有效数据',
+        message: '请确保选择了正确的 AWS SSO 缓存文件（kiro-auth-token.json 和 {hash}.json）',
+        variant: 'warning',
+        position: 'top-right',
+      });
+    } else {
+      const filledFields: string[] = [];
+      if (refreshToken) filledFields.push('refresh_token');
+      if (clientId) filledFields.push('client_id');
+      if (clientSecret) filledFields.push('client_secret');
+      if (region) filledFields.push('region');
+
+      toasterRef.current?.show({
+        title: '导入成功',
+        message: `已填充: ${filledFields.join(', ')}`,
+        variant: 'success',
+        position: 'top-right',
+      });
     }
   };
 
@@ -1698,8 +1778,8 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
 
     kiroBatchCancelRef.current = true;
 
-    setStep('platform');
-    setPlatform('');
+    setStep('kiro_provider');
+    setPlatform('kiro');
     setKiroProvider('');
     setLoginMethod('');
     setKiroLoginMethod('');
@@ -1801,218 +1881,7 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
         <Toaster ref={toasterRef} defaultPosition="top-right" />
 
         <div className="flex-1 min-h-0 overflow-y-auto px-4 py-6 space-y-6">
-          {/* 步骤 1: 选择平台 */}
-          {step === 'platform' && (
-            <div className="space-y-4">
-              <p className="text-sm text-muted-foreground">
-                你希望添加哪种类型的账号？
-              </p>
-
-              <div className="space-y-3">
-                <label
-                  className={cn(
-                    "flex items-center gap-3 p-4 border-2 rounded-lg cursor-pointer transition-colors",
-                    platform === 'antigravity' ? "border-primary bg-primary/5" : "border-border hover:border-primary/50"
-                  )}
-                >
-                  <input
-                    type="radio"
-                    name="platform"
-                    value="antigravity"
-                    checked={platform === 'antigravity'}
-                    onChange={(e) => setPlatform(e.target.value as 'antigravity')}
-                    className="w-4 h-4"
-                  />
-                  <img
-                    src="/antigravity-logo.png"
-                    alt="Antigravity"
-                    className="w-10 h-10 rounded-lg"
-                  />
-                  <div className="flex-1">
-                    <div className="flex items-center justify-between">
-                      <h3 className="font-semibold">Antigravity</h3>
-                      <Badge variant="secondary">可用</Badge>
-                    </div>
-                    <p className="text-sm text-muted-foreground mt-1">
-                      OAuth 授权登录
-                    </p>
-                  </div>
-                </label>
-
-                <label
-                  className={cn(
-                    "flex items-center gap-3 p-4 border-2 rounded-lg cursor-pointer transition-colors",
-                    platform === 'kiro' ? "border-primary bg-primary/5" : "border-border hover:border-primary/50"
-                  )}
-                >
-                  <input
-                    type="radio"
-                    name="platform"
-                    value="kiro"
-                    checked={platform === 'kiro'}
-                    onChange={(e) => setPlatform(e.target.value as 'kiro')}
-                    className="w-4 h-4"
-                  />
-                  <img
-                    src="/kiro.png"
-                    alt="Kiro"
-                    className="w-10 h-10 rounded-lg"
-                  />
-                  <div className="flex-1">
-                    <div className="flex items-center justify-between">
-                      <h3 className="font-semibold">Kiro</h3>
-                      <Badge variant="secondary">可用</Badge>
-                    </div>
-                    <p className="text-sm text-muted-foreground mt-1">
-                      Refresh Token 导入或 AWS-IMA（Builder ID）
-                    </p>
-                  </div>
-                </label>
-
-                <label
-                  className={cn(
-                    "flex items-center gap-3 p-4 border-2 rounded-lg cursor-pointer transition-colors",
-                    platform === 'qwen' ? "border-primary bg-primary/5" : "border-border hover:border-primary/50"
-                  )}
-                >
-                  <input
-                    type="radio"
-                    name="platform"
-                    value="qwen"
-                    checked={platform === 'qwen'}
-                    onChange={(e) => setPlatform(e.target.value as 'qwen')}
-                    className="w-4 h-4"
-                  />
-                  <div className="w-10 h-10 rounded-lg bg-muted flex items-center justify-center">
-                    <Qwen className="size-6 text-foreground" />
-                  </div>
-                  <div className="flex-1">
-                    <div className="flex items-center justify-between">
-                      <h3 className="font-semibold">Qwen</h3>
-                      <Badge variant="secondary">可用</Badge>
-                    </div>
-                    <p className="text-sm text-muted-foreground mt-1">
-                      QwenCli JSON 凭证导入
-                    </p>
-                  </div>
-                </label>
-
-                <label
-                  className={cn(
-                    "flex items-center gap-3 p-4 border-2 rounded-lg cursor-pointer transition-colors",
-                    platform === 'codex' ? "border-primary bg-primary/5" : "border-border hover:border-primary/50"
-                  )}
-                >
-                  <input
-                    type="radio"
-                    name="platform"
-                    value="codex"
-                    checked={platform === 'codex'}
-                    onChange={(e) => setPlatform(e.target.value as 'codex')}
-                    className="w-4 h-4"
-                  />
-                  <div className="w-10 h-10 rounded-lg bg-muted flex items-center justify-center">
-                    <OpenAI className="size-6 text-foreground" />
-                  </div>
-                  <div className="flex-1">
-                    <div className="flex items-center justify-between">
-                      <h3 className="font-semibold">Codex</h3>
-                      <Badge variant="secondary">可用</Badge>
-                    </div>
-                    <p className="text-sm text-muted-foreground mt-1">
-                      OAuth 登录 / 凭证 JSON 导入
-                    </p>
-                  </div>
-                </label>
-
-                <label
-                  className={cn(
-                    "flex items-center gap-3 p-4 border-2 rounded-lg cursor-pointer transition-colors",
-                    platform === 'gemini' ? "border-primary bg-primary/5" : "border-border hover:border-primary/50"
-                  )}
-                >
-                  <input
-                    type="radio"
-                    name="platform"
-                    value="gemini"
-                    checked={platform === 'gemini'}
-                    onChange={(e) => setPlatform(e.target.value as 'gemini')}
-                    className="w-4 h-4"
-                  />
-                  <div className="w-10 h-10 rounded-lg bg-muted flex items-center justify-center">
-                    <Gemini className="size-6 text-foreground" />
-                  </div>
-                  <div className="flex-1">
-                    <div className="flex items-center justify-between">
-                      <h3 className="font-semibold">GeminiCLI</h3>
-                      <Badge variant="secondary">可用</Badge>
-                    </div>
-                    <p className="text-sm text-muted-foreground mt-1">
-                      OAuth 登录 / 凭证 JSON 导入
-                    </p>
-                  </div>
-                </label>
-
-                <label
-                  className={cn(
-                    "flex items-center gap-3 p-4 border-2 rounded-lg cursor-pointer transition-colors",
-                    platform === 'zai-tts' ? "border-primary bg-primary/5" : "border-border hover:border-primary/50"
-                  )}
-                >
-                  <input
-                    type="radio"
-                    name="platform"
-                    value="zai-tts"
-                    checked={platform === 'zai-tts'}
-                    onChange={(e) => setPlatform(e.target.value as 'zai-tts')}
-                    className="w-4 h-4"
-                  />
-                  <div className="w-10 h-10 rounded-lg bg-muted flex items-center justify-center">
-                    <OpenAI className="size-6 text-foreground" />
-                  </div>
-                  <div className="flex-1">
-                    <div className="flex items-center justify-between">
-                      <h3 className="font-semibold">ZAI TTS</h3>
-                      <Badge variant="secondary">可用</Badge>
-                    </div>
-                    <p className="text-sm text-muted-foreground mt-1">
-                      账号 + Token + 音色ID
-                    </p>
-                  </div>
-                </label>
-
-                <label
-                  className={cn(
-                    "flex items-center gap-3 p-4 border-2 rounded-lg cursor-pointer transition-colors",
-                    platform === 'zai-image' ? "border-primary bg-primary/5" : "border-border hover:border-primary/50"
-                  )}
-                >
-                  <input
-                    type="radio"
-                    name="platform"
-                    value="zai-image"
-                    checked={platform === 'zai-image'}
-                    onChange={(e) => setPlatform(e.target.value as 'zai-image')}
-                    className="w-4 h-4"
-                  />
-                  <div className="w-10 h-10 rounded-lg bg-muted flex items-center justify-center">
-                    <OpenAI className="size-6 text-foreground" />
-                  </div>
-                  <div className="flex-1">
-                    <div className="flex items-center justify-between">
-                      <h3 className="font-semibold">ZAI Image</h3>
-                      <Badge variant="secondary">可用</Badge>
-                    </div>
-                    <p className="text-sm text-muted-foreground mt-1">
-                      Token（Cookie session）
-                    </p>
-                  </div>
-                </label>
-              </div>
-            </div>
-          )}
-
-          {/* 步骤 2: 选择 Kiro 授权渠道 */}
+          {/* 步骤 1: 选择 Kiro 授权渠道 */}
           {step === 'kiro_provider' && platform === 'kiro' && (
             <div className="space-y-4">
               <p className="text-sm text-muted-foreground">
@@ -2983,6 +2852,35 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
                       3. 在 JSON 中搜索 <span className="font-mono">refreshToken</span> / <span className="font-mono">clientId</span> / <span className="font-mono">clientSecret</span>
                       <br />
                       4. 将其值分别填写到下方的 <span className="font-mono">refresh_token</span> / <span className="font-mono">client_id</span> / <span className="font-mono">client_secret</span>
+                    </p>
+                  </div>
+
+                  <div className="space-y-3">
+                    <Label className="text-base font-semibold">快速导入</Label>
+                    <p className="text-sm text-muted-foreground">
+                      选择 AWS SSO 缓存目录下的 JSON 文件，自动解析并填充表单。
+                    </p>
+                    <div className="flex gap-2">
+                      <input
+                        type="file"
+                        id="kiro-sso-cache-files"
+                        accept=".json"
+                        multiple
+                        className="hidden"
+                        onChange={handleKiroSsoCacheFileSelect}
+                      />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="flex-1"
+                        onClick={() => document.getElementById('kiro-sso-cache-files')?.click()}
+                      >
+                        <IconUpload className="w-4 h-4 mr-2" />
+                        选择缓存文件
+                      </Button>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      支持同时选择 <span className="font-mono">kiro-auth-token.json</span> 和 <span className="font-mono">{'{hash}'}.json</span>
                     </p>
                   </div>
 

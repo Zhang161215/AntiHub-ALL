@@ -3,6 +3,7 @@ Anthropic兼容的API端点
 支持Anthropic Messages API格式 (/v1/messages)
 将请求转换为OpenAI格式后调用plug-in-api
 """
+
 from typing import Optional
 import uuid
 import logging
@@ -44,11 +45,11 @@ def dump_error_to_file(
     error_type: str,
     user_request: dict,
     error_info: dict,
-    endpoint: str = "/v1/messages"
+    endpoint: str = "/v1/messages",
 ):
     """
     将错误信息dump到JSON文件
-    
+
     Args:
         error_type: 错误类型（如 "upstream_error", "validation_error"）
         user_request: 用户的原始请求体
@@ -61,9 +62,9 @@ def dump_error_to_file(
             "endpoint": endpoint,
             "error_type": error_type,
             "user_request": user_request,
-            "error_info": error_info
+            "error_info": error_info,
         }
-        
+
         # 读取现有的错误记录
         existing_errors = []
         if os.path.exists(ERROR_DUMP_FILE):
@@ -72,27 +73,26 @@ def dump_error_to_file(
                     existing_errors = json.load(f)
             except (json.JSONDecodeError, IOError):
                 existing_errors = []
-        
+
         # 添加新的错误记录
         existing_errors.append(error_record)
-        
+
         # 只保留最近100条记录
         if len(existing_errors) > 100:
             existing_errors = existing_errors[-100:]
-        
+
         # 写入文件
         with open(ERROR_DUMP_FILE, "w", encoding="utf-8") as f:
             json.dump(existing_errors, f, ensure_ascii=False, indent=2)
-        
+
         logger.info(f"错误信息已dump到 {ERROR_DUMP_FILE}")
-        
+
     except Exception as e:
         logger.error(f"dump错误信息失败: {str(e)}")
 
 
 def get_kiro_service(
-    db: AsyncSession = Depends(get_db_session),
-    redis: RedisClient = Depends(get_redis)
+    db: AsyncSession = Depends(get_db_session), redis: RedisClient = Depends(get_redis)
 ) -> KiroService:
     """获取Kiro服务实例（带Redis缓存支持）"""
     return KiroService(db, redis)
@@ -156,15 +156,41 @@ async def _create_message_impl(
         thinking_config = getattr(request, "thinking", None)
         thinking_enabled = is_thinking_enabled(thinking_config)
 
+        # 调试日志：查看 thinking 配置
+        model_name = getattr(request, "model", "") or ""
+        logger.info(
+            f"[DEBUG] model={model_name}, thinking_config={thinking_config}, thinking_enabled={thinking_enabled}"
+        )
+        if model_name.endswith("-thinking") and not thinking_enabled:
+            thinking_enabled = True
+            # 设置 thinking 配置到 request 对象上，让转换器能读取到
+            request.thinking = {"type": "enabled", "budget_tokens": 200000}
+            logger.info(
+                f"模型名 {model_name} 以 -thinking 结尾，自动启用 thinking 模式"
+            )
+
+        # 如果请求中启用了 thinking，但模型名没有 -thinking 后缀，自动添加后缀
+        # 这样用户在 Claude Code 设置里开启 thinking 后，会自动映射到 thinking 模型
+        if thinking_enabled and not model_name.endswith("-thinking"):
+            new_model_name = f"{model_name}-thinking"
+            request.model = new_model_name
+            logger.info(
+                f"请求启用了 thinking，自动将模型 {model_name} 映射到 {new_model_name}"
+            )
+
         # Kiro 通道：直接把 Anthropic Messages 转为 conversationState（参考 kiro.rs 结构）
         # 其它通道：继续走 Anthropic -> OpenAI 转换，转发到 plug-in chat/completions
         if use_kiro:
-            upstream_request = KiroAnthropicConverter.to_kiro_chat_completions_request(request)
+            upstream_request = KiroAnthropicConverter.to_kiro_chat_completions_request(
+                request
+            )
         else:
             upstream_request = AnthropicAdapter.anthropic_to_openai_request(request)
             if config_type == "qwen":
                 # Qwen 上游不支持 OpenAI 多模态 content list；这里做最小可用降级（保文本，丢图）。
-                upstream_request = AnthropicAdapter.sanitize_openai_request_for_qwen(upstream_request)
+                upstream_request = AnthropicAdapter.sanitize_openai_request_for_qwen(
+                    upstream_request
+                )
 
         # 准备额外的请求头
         extra_headers = {}
@@ -173,6 +199,7 @@ async def _create_message_impl(
 
         # 如果是流式请求
         if request.stream:
+
             async def generate():
                 try:
                     if use_kiro:
@@ -316,9 +343,7 @@ async def _create_message_impl(
                     e.response.json()
                     if hasattr(e.response, "json")
                     else str(
-                        e.response.text
-                        if hasattr(e.response, "text")
-                        else e.response
+                        e.response.text if hasattr(e.response, "text") else e.response
                     )
                 )
             except Exception:
@@ -351,23 +376,11 @@ async def _create_message_impl(
     summary="创建消息",
     description="使用Anthropic Messages API格式创建消息（Anthropic兼容）。内部转换为OpenAI格式调用plug-in-api",
     responses={
-        200: {
-            "description": "成功响应",
-            "model": AnthropicMessagesResponse
-        },
-        400: {
-            "description": "请求错误",
-            "model": AnthropicErrorResponse
-        },
-        401: {
-            "description": "认证失败",
-            "model": AnthropicErrorResponse
-        },
-        500: {
-            "description": "服务器错误",
-            "model": AnthropicErrorResponse
-        }
-    }
+        200: {"description": "成功响应", "model": AnthropicMessagesResponse},
+        400: {"description": "请求错误", "model": AnthropicErrorResponse},
+        401: {"description": "认证失败", "model": AnthropicErrorResponse},
+        500: {"description": "服务器错误", "model": AnthropicErrorResponse},
+    },
 )
 async def create_message(
     request: AnthropicMessagesRequest,
@@ -376,21 +389,21 @@ async def create_message(
     antigravity_service: PluginAPIService = Depends(get_plugin_api_service),
     kiro_service: KiroService = Depends(get_kiro_service),
     anthropic_version: Optional[str] = Header(None, alias="anthropic-version"),
-    anthropic_beta: Optional[str] = Header(None, alias="anthropic-beta")
+    anthropic_beta: Optional[str] = Header(None, alias="anthropic-beta"),
 ):
     """
     创建消息 (Anthropic Messages API兼容)
-    
+
     支持三种认证方式：
     1. X-Api-Key 标头 - Anthropic 官方认证方式
     2. Authorization Bearer API key - 用于程序调用，根据API key的config_type自动选择配置
     3. Authorization Bearer JWT token - 用于网页聊天，默认使用Antigravity配置，但可以通过X-Api-Type请求头指定配置
-    
+
     **配置选择:**
     - 使用API key时，仅允许 config_type=antigravity/kiro（其它类型会 403：不支持的规范）
     - 使用JWT token时，默认使用Antigravity配置，但可以通过X-Api-Type请求头指定配置（antigravity/kiro/qwen）
     - Kiro配置需要beta权限（qwen不需要）
-    
+
     **格式转换:**
     - 接收Anthropic Messages API格式的请求
     - 内部转换为OpenAI格式调用plug-in-api
@@ -414,23 +427,11 @@ async def create_message(
     summary="创建消息（Claude Code兼容）",
     description="Claude Code 2.1.9+ 兼容端点：将真实 tokens 写入 message_start（通过缓冲 SSE 实现）。",
     responses={
-        200: {
-            "description": "成功响应",
-            "model": AnthropicMessagesResponse
-        },
-        400: {
-            "description": "请求错误",
-            "model": AnthropicErrorResponse
-        },
-        401: {
-            "description": "认证失败",
-            "model": AnthropicErrorResponse
-        },
-        500: {
-            "description": "服务器错误",
-            "model": AnthropicErrorResponse
-        }
-    }
+        200: {"description": "成功响应", "model": AnthropicMessagesResponse},
+        400: {"description": "请求错误", "model": AnthropicErrorResponse},
+        401: {"description": "认证失败", "model": AnthropicErrorResponse},
+        500: {"description": "服务器错误", "model": AnthropicErrorResponse},
+    },
 )
 async def create_message_cc(
     request: AnthropicMessagesRequest,
@@ -439,7 +440,7 @@ async def create_message_cc(
     antigravity_service: PluginAPIService = Depends(get_plugin_api_service),
     kiro_service: KiroService = Depends(get_kiro_service),
     anthropic_version: Optional[str] = Header(None, alias="anthropic-version"),
-    anthropic_beta: Optional[str] = Header(None, alias="anthropic-beta")
+    anthropic_beta: Optional[str] = Header(None, alias="anthropic-beta"),
 ):
     """
     Claude Code 兼容端点：/cc/v1/messages
@@ -464,16 +465,14 @@ async def create_message_cc(
 @cc_router.post(
     "/messages/count_tokens",
     summary="计算Token数量（Claude Code兼容）",
-    description="计算消息的token数量（与 /v1/messages/count_tokens 相同）"
+    description="计算消息的token数量（与 /v1/messages/count_tokens 相同）",
 )
 @router.post(
     "/messages/count_tokens",
     summary="计算Token数量",
-    description="计算消息的token数量（Anthropic兼容）"
+    description="计算消息的token数量（Anthropic兼容）",
 )
-async def count_tokens(
-    raw_request: Request
-):
+async def count_tokens(raw_request: Request):
     """
     计算消息的token数量
 
@@ -499,32 +498,25 @@ async def count_tokens(
 
         # 使用优化后的 token 计算
         estimated_tokens = count_all_tokens(
-            messages=messages,
-            system=system,
-            tools=tools
+            messages=messages, system=system, tools=tools
         )
 
-        return {
-            "input_tokens": estimated_tokens
-        }
+        return {"input_tokens": estimated_tokens}
 
     except ValueError as e:
         logger.error(f"Token计数请求验证失败: {str(e)}")
         error_response = AnthropicAdapter.create_error_response(
-            error_type="invalid_request_error",
-            message=str(e)
+            error_type="invalid_request_error", message=str(e)
         )
         return JSONResponse(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            content=error_response.model_dump()
+            status_code=status.HTTP_400_BAD_REQUEST, content=error_response.model_dump()
         )
     except Exception as e:
         logger.error(f"Token计数失败: {str(e)}")
         error_response = AnthropicAdapter.create_error_response(
-            error_type="api_error",
-            message=f"Token计数失败: {str(e)}"
+            error_type="api_error", message=f"Token计数失败: {str(e)}"
         )
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content=error_response.model_dump()
+            content=error_response.model_dump(),
         )
