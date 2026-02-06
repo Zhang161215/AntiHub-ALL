@@ -55,7 +55,15 @@ import { Gemini, Claude, OpenAI, Qwen } from '@lobehub/icons';
 import Toaster, { ToasterRef } from '@/components/ui/toast';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { IconPlus, IconTrash, IconRefresh, IconActivity, IconChartBar as IconChartBarTabler } from '@tabler/icons-react';
+import { IconPlus, IconTrash, IconRefresh, IconActivity, IconChartBar as IconChartBarTabler, IconArrowRight, IconEdit } from '@tabler/icons-react';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 
 export default function AnalyticsPage() {
   const toasterRef = useRef<ToasterRef>(null);
@@ -70,6 +78,8 @@ export default function AnalyticsPage() {
   const [newFrontendModel, setNewFrontendModel] = useState('');
   const [newKiroModel, setNewKiroModel] = useState('');
   const [isAddingMapping, setIsAddingMapping] = useState(false);
+  const [isMappingDialogOpen, setIsMappingDialogOpen] = useState(false);
+  const [editingMapping, setEditingMapping] = useState<{ frontendModel: string; kiroModel: string } | null>(null);
   const [requestStats, setRequestStats] = useState<RequestUsageStats | null>(null);
   const [requestLogs, setRequestLogs] = useState<RequestUsageLogItem[]>([]);
   const [currentPage, setCurrentPage] = useState(1);
@@ -742,140 +752,220 @@ export default function AnalyticsPage() {
 
             {/* 模型映射 */}
             <Card className="mb-4">
-              <CardHeader className="py-3">
+              <CardHeader className="py-3 pb-2">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
-                    <CardTitle className="text-sm font-medium">模型映射</CardTitle>
-                    <Badge variant="secondary" className="text-[10px]">{Object.keys(kiroModelMappings).length} 个</Badge>
-                  </div>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 text-xs"
-                    onClick={async () => {
-                      try {
-                        const mappings = await resetKiroModelMappings();
-                        setKiroModelMappings(mappings);
-                        toasterRef.current?.show({
-                          title: '重置成功',
-                          message: '模型映射已重置为默认值',
-                          variant: 'success',
-                          position: 'top-right',
-                        });
-                      } catch (err) {
-                        toasterRef.current?.show({
-                          title: '重置失败',
-                          message: err instanceof Error ? err.message : '重置模型映射失败',
-                          variant: 'error',
-                          position: 'top-right',
-                        });
-                      }
-                    }}
-                  >
-                    <IconRefresh className="size-3 mr-1" />
-                    重置
-                  </Button>
-                </div>
-              </CardHeader>
-              <CardContent className="pt-0">
-                <div className="space-y-2">
-                  {/* 现有映射列表 */}
-                  {Object.entries(kiroModelMappings).map(([frontendModel, kiroModel]) => (
-                    <div key={frontendModel} className="flex items-center gap-1.5 text-xs">
-                      <Badge variant="outline" className="font-mono text-[10px] py-0 px-1.5">
-                        {frontendModel}
-                      </Badge>
-                      <span className="text-muted-foreground text-[10px]">→</span>
-                      <Badge variant="secondary" className="font-mono text-[10px] py-0 px-1.5">
-                        {kiroModel}
-                      </Badge>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-5 w-5 p-0 ml-auto text-destructive hover:text-destructive"
-                        onClick={async () => {
-                          try {
-                            const mappings = await deleteKiroModelMapping(frontendModel);
-                            setKiroModelMappings(mappings);
-                            toasterRef.current?.show({
-                              title: '删除成功',
-                              message: `已删除映射: ${frontendModel}`,
-                              variant: 'success',
-                              position: 'top-right',
-                            });
-                          } catch (err) {
-                            toasterRef.current?.show({
-                              title: '删除失败',
-                              message: err instanceof Error ? err.message : '删除模型映射失败',
-                              variant: 'error',
-                              position: 'top-right',
-                            });
-                          }
-                        }}
-                      >
-                        <IconTrash className="size-2.5" />
-                      </Button>
+                    <div className="p-1.5 rounded-md bg-purple-500/10">
+                      <IconRefresh className="size-4 text-purple-500" />
                     </div>
-                  ))}
-                  
-                  {/* 添加新映射 */}
-                  <div className="flex items-center gap-1.5 pt-2 border-t">
-                    <Input
-                      placeholder="前端模型名"
-                      value={newFrontendModel}
-                      onChange={(e) => setNewFrontendModel(e.target.value)}
-                      className="font-mono text-xs h-7 w-[160px]"
-                    />
-                    <span className="text-muted-foreground text-[10px]">→</span>
-                    <Select value={newKiroModel} onValueChange={setNewKiroModel}>
-                      <SelectTrigger className="font-mono text-xs h-7 w-[180px]">
-                        <SelectValue placeholder="选择 Kiro 模型" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {kiroModels.map((model) => (
-                          <SelectItem key={model.id} value={model.id} className="text-xs">
-                            {model.display_name || model.id}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                    <div>
+                      <CardTitle className="text-sm font-medium">模型映射</CardTitle>
+                      <p className="text-[10px] text-muted-foreground">前端模型名 → Kiro 真实模型</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Badge variant="secondary" className="text-[10px]">{Object.keys(kiroModelMappings).length} 个映射</Badge>
                     <Button
                       variant="outline"
                       size="sm"
-                      className="h-7 w-7 p-0"
-                      disabled={!newFrontendModel.trim() || !newKiroModel.trim() || isAddingMapping}
+                      className="h-7 text-xs"
                       onClick={async () => {
-                        if (!newFrontendModel.trim() || !newKiroModel.trim()) return;
-                        setIsAddingMapping(true);
                         try {
-                          const mappings = await addKiroModelMapping(newFrontendModel.trim(), newKiroModel.trim());
+                          const mappings = await resetKiroModelMappings();
                           setKiroModelMappings(mappings);
-                          setNewFrontendModel('');
-                          setNewKiroModel('');
                           toasterRef.current?.show({
-                            title: '添加成功',
-                            message: `已添加映射: ${newFrontendModel.trim()} → ${newKiroModel.trim()}`,
+                            title: '重置成功',
+                            message: '模型映射已重置为默认值',
                             variant: 'success',
                             position: 'top-right',
                           });
                         } catch (err) {
                           toasterRef.current?.show({
-                            title: '添加失败',
-                            message: err instanceof Error ? err.message : '添加模型映射失败',
+                            title: '重置失败',
+                            message: err instanceof Error ? err.message : '重置模型映射失败',
                             variant: 'error',
                             position: 'top-right',
                           });
-                        } finally {
-                          setIsAddingMapping(false);
                         }
                       }}
                     >
-                      <IconPlus className="size-3" />
+                      <IconRefresh className="size-3 mr-1" />
+                      重置默认
+                    </Button>
+                    <Button
+                      size="sm"
+                      className="h-7 text-xs"
+                      onClick={() => {
+                        setEditingMapping(null);
+                        setNewFrontendModel('');
+                        setNewKiroModel('');
+                        setIsMappingDialogOpen(true);
+                      }}
+                    >
+                      <IconPlus className="size-3 mr-1" />
+                      添加映射
                     </Button>
                   </div>
                 </div>
+              </CardHeader>
+              <CardContent className="pt-2">
+                {/* 映射列表 */}
+                {Object.keys(kiroModelMappings).length === 0 ? (
+                  <div className="text-center py-8 text-muted-foreground">
+                    <p className="text-sm">暂无模型映射</p>
+                    <p className="text-xs mt-1">点击右上角"添加映射"按钮创建</p>
+                  </div>
+                ) : (
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    {Object.entries(kiroModelMappings).map(([frontendModel, kiroModel]) => (
+                      <div 
+                        key={frontendModel} 
+                        className="flex items-center gap-2 p-2.5 rounded-lg border bg-card hover:bg-muted/30 transition-colors group"
+                      >
+                        <div className="flex-1 min-w-0 flex items-center gap-2 overflow-hidden">
+                          <code className="text-xs font-mono bg-blue-500/10 text-blue-600 dark:text-blue-400 px-2 py-0.5 rounded flex-1 truncate" title={frontendModel}>
+                            {frontendModel}
+                          </code>
+                          <IconArrowRight className="size-3 text-muted-foreground shrink-0" />
+                          <code className="text-xs font-mono bg-green-500/10 text-green-600 dark:text-green-400 px-2 py-0.5 rounded flex-1 truncate" title={kiroModel}>
+                            {kiroModel}
+                          </code>
+                        </div>
+                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-6 w-6 p-0 hover:bg-muted"
+                            onClick={() => {
+                              setEditingMapping({ frontendModel, kiroModel });
+                              setNewFrontendModel(frontendModel);
+                              setNewKiroModel(kiroModel);
+                              setIsMappingDialogOpen(true);
+                            }}
+                          >
+                            <IconEdit className="size-3.5" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-6 w-6 p-0 text-destructive hover:text-destructive hover:bg-destructive/10"
+                            onClick={async () => {
+                              try {
+                                const mappings = await deleteKiroModelMapping(frontendModel);
+                                setKiroModelMappings(mappings);
+                                toasterRef.current?.show({
+                                  title: '删除成功',
+                                  message: `已删除映射: ${frontendModel}`,
+                                  variant: 'success',
+                                  position: 'top-right',
+                                });
+                              } catch (err) {
+                                toasterRef.current?.show({
+                                  title: '删除失败',
+                                  message: err instanceof Error ? err.message : '删除模型映射失败',
+                                  variant: 'error',
+                                  position: 'top-right',
+                                });
+                              }
+                            }}
+                          >
+                            <IconTrash className="size-3.5" />
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </CardContent>
             </Card>
+
+            {/* 添加/编辑映射弹窗 */}
+            <Dialog open={isMappingDialogOpen} onOpenChange={(open) => {
+              setIsMappingDialogOpen(open);
+              if (!open) {
+                setEditingMapping(null);
+                setNewFrontendModel('');
+                setNewKiroModel('');
+              }
+            }}>
+              <DialogContent className="sm:max-w-[550px]">
+                <DialogHeader>
+                  <DialogTitle>{editingMapping ? '编辑映射' : '添加映射'}</DialogTitle>
+                  <DialogDescription>
+                    {editingMapping ? '修改模型映射关系' : '创建新的模型映射关系，将前端请求的模型名映射到 Kiro 真实模型'}
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="grid grid-cols-2 gap-4 py-4">
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">前端模型名</label>
+                    <Input
+                      placeholder="例如: claude-sonnet-4-20250514"
+                      value={newFrontendModel}
+                      onChange={(e) => setNewFrontendModel(e.target.value)}
+                      className="font-mono text-sm h-9 w-full"
+                      disabled={!!editingMapping}
+                    />
+                    <p className="text-[10px] text-muted-foreground">
+                      {editingMapping ? '编辑时不能修改前端模型名' : '客户端请求时使用的模型名'}
+                    </p>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">Kiro 模型</label>
+                    <Select key={`select-${newKiroModel}`} value={newKiroModel} onValueChange={setNewKiroModel}>
+                      <SelectTrigger className="font-mono text-sm h-9 w-full">
+                        <SelectValue placeholder="选择 Kiro 模型">{newKiroModel || '选择 Kiro 模型'}</SelectValue>
+                      </SelectTrigger>
+                      <SelectContent>
+                        {kiroModels.map((model) => (
+                          <SelectItem key={model.id} value={model.id} className="font-mono">
+                            {model.display_name || model.id}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <p className="text-[10px] text-muted-foreground">实际调用的 Kiro 模型</p>
+                  </div>
+                </div>
+                <DialogFooter>
+                  <Button variant="outline" onClick={() => setIsMappingDialogOpen(false)}>
+                    取消
+                  </Button>
+                  <Button
+                    disabled={!newFrontendModel.trim() || !newKiroModel.trim() || isAddingMapping}
+                    onClick={async () => {
+                      if (!newFrontendModel.trim() || !newKiroModel.trim()) return;
+                      setIsAddingMapping(true);
+                      try {
+                        // 如果是编辑，先删除旧的
+                        if (editingMapping) {
+                          await deleteKiroModelMapping(editingMapping.frontendModel);
+                        }
+                        const mappings = await addKiroModelMapping(newFrontendModel.trim(), newKiroModel.trim());
+                        setKiroModelMappings(mappings);
+                        setIsMappingDialogOpen(false);
+                        toasterRef.current?.show({
+                          title: editingMapping ? '修改成功' : '添加成功',
+                          message: `${editingMapping ? '已修改' : '已添加'}映射: ${newFrontendModel.trim()} → ${newKiroModel.trim()}`,
+                          variant: 'success',
+                          position: 'top-right',
+                        });
+                      } catch (err) {
+                        toasterRef.current?.show({
+                          title: editingMapping ? '修改失败' : '添加失败',
+                          message: err instanceof Error ? err.message : '操作失败',
+                          variant: 'error',
+                          position: 'top-right',
+                        });
+                      } finally {
+                        setIsAddingMapping(false);
+                      }
+                    }}
+                  >
+                    {isAddingMapping ? '处理中...' : (editingMapping ? '保存' : '添加')}
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
 
             {/* 使用记录 */}
             <Card>
