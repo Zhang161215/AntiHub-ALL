@@ -59,3 +59,26 @@ There is no single repo-wide test runner today. For changes, run a Docker smoke 
 
 Commit messages generally follow `<type>: <summary>` (common types: `feat:`, `fix:`; `!` indicates breaking changes). PRs should include: what changed, how to verify (exact commands), and screenshots for UI changes. If you add environment variables, update the relevant `*.example` files and document defaults.
 
+## Known Issues / TODO
+
+### Kiro Edit 工具参数名映射问题 (2026-02-04)
+
+**问题描述**：Kiro 上游模型返回的 Edit 工具参数名与 Claude Code 期望的不匹配：
+- Kiro 返回: `old_str`, `new_str`, `file_path`
+- Claude Code 期望: `old_string`, `new_string`, `filePath`
+
+**根本原因**：流式传输时参数名可能被分割到不同的 chunk（如 `"old_st` + `r"`），导致正则替换无法匹配。
+
+**尝试过的方案**：
+1. 累积完整参数后发送 → 客户端格式问题
+2. 智能边界缓冲 → 逻辑复杂，引入新 bug（死循环）
+3. 多种分割情况的正则匹配 → 仍有边界情况失败
+
+**建议的解决方向**：
+- 在 `kiro_client.js` 工具调用完成时（`hasInput=false`）对完整参数做替换
+- 或修改 Kiro 请求时的工具 schema，让上游直接返回正确的参数名
+
+**相关文件**：
+- `AntiHub-plugin/src/server/kiro_routes.js`
+- `AntiHub-plugin/src/api/kiro_client.js`
+

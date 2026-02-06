@@ -2,6 +2,7 @@ import https from 'https';
 import crypto from 'crypto';
 import logger from '../utils/logger.js';
 import redisService from './redis.service.js';
+import kiroModelMappingService from './kiro_model_mapping.service.js';
 
 /**
  * Kiro OAuth Redis Key前缀
@@ -75,15 +76,172 @@ function buildAwsEndpoints(region) {
 const KIRO_REDIRECT_URI = 'kiro://kiro.kiroAgent/authenticate-success';
 
 /**
- * Kiro 模型映射
+ * Kiro 模型映射（前端模型名 -> Kiro 真实模型名）
+ * 参考 CLIProxyAPIPlus: https://github.com/router-for-me/CLIProxyAPIPlus
  */
 const KIRO_MODEL_MAP = {
+  // 基础模型
   'claude-sonnet-4-5': 'claude-sonnet-4.5',
   'claude-sonnet-4-5-20250929': 'claude-sonnet-4.5',
   'claude-sonnet-4-20250514': 'claude-sonnet-4',
   'claude-opus-4-5-20251101': 'claude-opus-4.5',
-  'claude-haiku-4-5-20251001': 'claude-haiku-4.5'
+  'claude-opus-4-6-20260205': 'claude-opus-4.6',
+  'claude-haiku-4-5-20251001': 'claude-haiku-4.5',
+  // Kiro 原生模型名
+  'kiro-auto': 'auto',
+  'kiro-claude-opus-4-6': 'claude-opus-4.6',
+  'kiro-claude-opus-4-5': 'claude-opus-4.5',
+  'kiro-claude-sonnet-4-5': 'claude-sonnet-4.5',
+  'kiro-claude-sonnet-4': 'claude-sonnet-4',
+  'kiro-claude-haiku-4-5': 'claude-haiku-4.5',
+  // Agentic 变体
+  'kiro-claude-opus-4-6-agentic': 'claude-opus-4.6',
+  'kiro-claude-opus-4-5-agentic': 'claude-opus-4.5',
+  'kiro-claude-sonnet-4-5-agentic': 'claude-sonnet-4.5',
+  'kiro-claude-sonnet-4-agentic': 'claude-sonnet-4',
+  'kiro-claude-haiku-4-5-agentic': 'claude-haiku-4.5'
 };
+
+/**
+ * Kiro 模型详细定义（参考 CLIProxyAPIPlus model_definitions.go）
+ * 包含 thinking 支持、context_length 等元数据
+ */
+const KIRO_MODELS = [
+  // --- 基础模型 ---
+  {
+    id: 'kiro-auto',
+    object: 'model',
+    created: 1732752000,
+    owned_by: 'aws',
+    type: 'kiro',
+    display_name: 'Kiro Auto',
+    description: 'Automatic model selection by Kiro',
+    context_length: 200000,
+    max_completion_tokens: 64000,
+    thinking: { min: 1024, max: 32000, zero_allowed: true, dynamic_allowed: true }
+  },
+  {
+    id: 'kiro-claude-opus-4-6',
+    object: 'model',
+    created: 1736899200, // 2025-01-15
+    owned_by: 'aws',
+    type: 'kiro',
+    display_name: 'Kiro Claude Opus 4.6',
+    description: 'Claude Opus 4.6 via Kiro (2.2x credit)',
+    context_length: 200000,
+    max_completion_tokens: 64000,
+    thinking: { min: 1024, max: 32000, zero_allowed: true, dynamic_allowed: true }
+  },
+  {
+    id: 'kiro-claude-opus-4-5',
+    object: 'model',
+    created: 1732752000,
+    owned_by: 'aws',
+    type: 'kiro',
+    display_name: 'Kiro Claude Opus 4.5',
+    description: 'Claude Opus 4.5 via Kiro (2.2x credit)',
+    context_length: 200000,
+    max_completion_tokens: 64000,
+    thinking: { min: 1024, max: 32000, zero_allowed: true, dynamic_allowed: true }
+  },
+  {
+    id: 'kiro-claude-sonnet-4-5',
+    object: 'model',
+    created: 1732752000,
+    owned_by: 'aws',
+    type: 'kiro',
+    display_name: 'Kiro Claude Sonnet 4.5',
+    description: 'Claude Sonnet 4.5 via Kiro (1.3x credit)',
+    context_length: 200000,
+    max_completion_tokens: 64000,
+    thinking: { min: 1024, max: 32000, zero_allowed: true, dynamic_allowed: true }
+  },
+  {
+    id: 'kiro-claude-sonnet-4',
+    object: 'model',
+    created: 1732752000,
+    owned_by: 'aws',
+    type: 'kiro',
+    display_name: 'Kiro Claude Sonnet 4',
+    description: 'Claude Sonnet 4 via Kiro (1.3x credit)',
+    context_length: 200000,
+    max_completion_tokens: 64000,
+    thinking: { min: 1024, max: 32000, zero_allowed: true, dynamic_allowed: true }
+  },
+  {
+    id: 'kiro-claude-haiku-4-5',
+    object: 'model',
+    created: 1732752000,
+    owned_by: 'aws',
+    type: 'kiro',
+    display_name: 'Kiro Claude Haiku 4.5',
+    description: 'Claude Haiku 4.5 via Kiro (0.4x credit)',
+    context_length: 200000,
+    max_completion_tokens: 64000,
+    thinking: { min: 1024, max: 32000, zero_allowed: true, dynamic_allowed: true }
+  },
+  // --- Agentic 变体（优化用于编码代理的分块写入）---
+  {
+    id: 'kiro-claude-opus-4-6-agentic',
+    object: 'model',
+    created: 1736899200,
+    owned_by: 'aws',
+    type: 'kiro',
+    display_name: 'Kiro Claude Opus 4.6 (Agentic)',
+    description: 'Claude Opus 4.6 optimized for coding agents (chunked writes)',
+    context_length: 200000,
+    max_completion_tokens: 64000,
+    thinking: { min: 1024, max: 32000, zero_allowed: true, dynamic_allowed: true }
+  },
+  {
+    id: 'kiro-claude-opus-4-5-agentic',
+    object: 'model',
+    created: 1732752000,
+    owned_by: 'aws',
+    type: 'kiro',
+    display_name: 'Kiro Claude Opus 4.5 (Agentic)',
+    description: 'Claude Opus 4.5 optimized for coding agents (chunked writes)',
+    context_length: 200000,
+    max_completion_tokens: 64000,
+    thinking: { min: 1024, max: 32000, zero_allowed: true, dynamic_allowed: true }
+  },
+  {
+    id: 'kiro-claude-sonnet-4-5-agentic',
+    object: 'model',
+    created: 1732752000,
+    owned_by: 'aws',
+    type: 'kiro',
+    display_name: 'Kiro Claude Sonnet 4.5 (Agentic)',
+    description: 'Claude Sonnet 4.5 optimized for coding agents (chunked writes)',
+    context_length: 200000,
+    max_completion_tokens: 64000,
+    thinking: { min: 1024, max: 32000, zero_allowed: true, dynamic_allowed: true }
+  },
+  {
+    id: 'kiro-claude-sonnet-4-agentic',
+    object: 'model',
+    created: 1732752000,
+    owned_by: 'aws',
+    type: 'kiro',
+    display_name: 'Kiro Claude Sonnet 4 (Agentic)',
+    description: 'Claude Sonnet 4 optimized for coding agents (chunked writes)',
+    context_length: 200000,
+    max_completion_tokens: 64000,
+    thinking: { min: 1024, max: 32000, zero_allowed: true, dynamic_allowed: true }
+  },
+  {
+    id: 'kiro-claude-haiku-4-5-agentic',
+    object: 'model',
+    created: 1732752000,
+    owned_by: 'aws',
+    type: 'kiro',
+    display_name: 'Kiro Claude Haiku 4.5 (Agentic)',
+    description: 'Claude Haiku 4.5 optimized for coding agents (chunked writes)',
+    context_length: 200000,
+    max_completion_tokens: 64000,
+    thinking: { min: 1024, max: 32000, zero_allowed: true, dynamic_allowed: true }
+  }
+];
 
 /**
  * Kiro 默认配置
@@ -577,16 +735,27 @@ class KiroService {
   }
 
   /**
-   * 获取Kiro模型ID
-   * @param {string} model - 模型名称
-   * @returns {string} Kiro模型ID
+   * 获取Kiro模型ID（优先使用数据库映射，其次使用默认映射）
+   * @param {string} model - 前端模型名
+   * @returns {Promise<string>} Kiro模型ID
    */
-  getKiroModelId(model) {
-    const modelId = KIRO_MODEL_MAP[model];
-    if (!modelId) {
-      throw new Error(`未知的Kiro模型: ${model}，可用模型: ${Object.keys(KIRO_MODEL_MAP).join(', ')}`);
+  async getKiroModelId(model) {
+    // 1. 先查询数据库映射
+    const dbMapping = await kiroModelMappingService.getKiroModel(model);
+    if (dbMapping) {
+      logger.info(`模型映射(数据库): ${model} -> ${dbMapping}`);
+      return dbMapping;
     }
-    return modelId;
+    
+    // 2. 使用默认映射
+    const modelId = KIRO_MODEL_MAP[model];
+    if (modelId) {
+      logger.info(`模型映射(默认): ${model} -> ${modelId}`);
+      return modelId;
+    }
+    
+    // 3. 如果都没有，抛出错误
+    throw new Error(`未知的Kiro模型: ${model}，可用模型: ${Object.keys(KIRO_MODEL_MAP).join(', ')}`);
   }
 
   /**
@@ -652,11 +821,11 @@ class KiroService {
    * @param {Object} options - 其他选项
    * @returns {Object} CodeWhisperer请求体
    */
-  convertToCodeWhispererRequest(messages, model, options = {}) {
+  async convertToCodeWhispererRequest(messages, model, options = {}) {
     // 先处理 thinking parts，将其转换为普通 text parts
     const patchedMessages = this.patchThinkingParts(messages);
     
-    const modelId = this.getKiroModelId(model);
+    const modelId = await this.getKiroModelId(model);
     const conversationId = crypto.randomUUID();
     const agentContinuationId = crypto.randomUUID();
 
@@ -1307,16 +1476,11 @@ class KiroService {
   }
 
   /**
-   * 获取可用的Kiro模型列表（静态列表，兼容旧接口）
+   * 获取可用的Kiro模型列表（完整模型信息，参考 CLIProxyAPIPlus）
    * @returns {Array} 模型列表
    */
   getAvailableModels() {
-    return Object.keys(KIRO_MODEL_MAP).map(id => ({
-      id,
-      object: 'model',
-      created: Math.floor(Date.now() / 1000),
-      owned_by: 'anthropic'
-    }));
+    return KIRO_MODELS;
   }
 
   /**
@@ -1501,4 +1665,4 @@ class KiroService {
 
 const kiroService = new KiroService();
 export default kiroService;
-export { KIRO_MODEL_MAP, KIRO_ENDPOINTS, KIRO_DEFAULTS };
+export { KIRO_MODEL_MAP, KIRO_MODELS, KIRO_ENDPOINTS, KIRO_DEFAULTS };

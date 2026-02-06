@@ -1,6 +1,7 @@
 import express from 'express';
 import kiroAccountService from '../services/kiro_account.service.js';
-import kiroService from '../services/kiro.service.js';
+import kiroService, { KIRO_MODEL_MAP } from '../services/kiro.service.js';
+import kiroModelMappingService from '../services/kiro_model_mapping.service.js';
 import kiroClient from '../api/kiro_client.js';
 import kiroConsumptionService from '../services/kiro_consumption.service.js';
 import kiroSubscriptionModelService from '../services/kiro_subscription_model.service.js';
@@ -908,6 +909,130 @@ router.get('/v1/kiro/models', authenticateApiKey, async (req, res) => {
 });
 
 /**
+ * 获取Kiro模型映射表
+ * GET /api/kiro/model-mappings
+ * 返回格式: { mappings: { "前端模型名": "Kiro真实模型名", ... } }
+ */
+router.get('/api/kiro/model-mappings', authenticateApiKey, async (req, res) => {
+  try {
+    const mappings = await kiroModelMappingService.getMappings();
+    res.json({
+      success: true,
+      data: {
+        mappings
+      }
+    });
+  } catch (error) {
+    logger.error('获取Kiro模型映射失败:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * 更新Kiro模型映射表（批量替换）
+ * PUT /api/kiro/model-mappings
+ * Body: { mappings: { "前端模型名": "Kiro真实模型名", ... } }
+ */
+router.put('/api/kiro/model-mappings', authenticateApiKey, requireAdmin, async (req, res) => {
+  try {
+    const { mappings } = req.body;
+    
+    if (!mappings || typeof mappings !== 'object') {
+      return res.status(400).json({ error: 'mappings 参数必须是一个对象' });
+    }
+    
+    await kiroModelMappingService.setMappings(mappings);
+    
+    const updatedMappings = await kiroModelMappingService.getMappings();
+    res.json({
+      success: true,
+      data: {
+        mappings: updatedMappings
+      }
+    });
+  } catch (error) {
+    logger.error('更新Kiro模型映射失败:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * 添加或更新单个模型映射
+ * POST /api/kiro/model-mappings
+ * Body: { frontend_model: "前端模型名", kiro_model: "Kiro真实模型名" }
+ */
+router.post('/api/kiro/model-mappings', authenticateApiKey, requireAdmin, async (req, res) => {
+  try {
+    const { frontend_model, kiro_model } = req.body;
+    
+    if (!frontend_model || !kiro_model) {
+      return res.status(400).json({ error: 'frontend_model 和 kiro_model 参数都是必需的' });
+    }
+    
+    await kiroModelMappingService.upsertMapping(frontend_model, kiro_model);
+    
+    const mappings = await kiroModelMappingService.getMappings();
+    res.json({
+      success: true,
+      data: {
+        mappings
+      }
+    });
+  } catch (error) {
+    logger.error('添加Kiro模型映射失败:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * 删除单个模型映射
+ * DELETE /api/kiro/model-mappings/:frontendModel
+ */
+router.delete('/api/kiro/model-mappings/:frontendModel', authenticateApiKey, requireAdmin, async (req, res) => {
+  try {
+    const { frontendModel } = req.params;
+    
+    const deleted = await kiroModelMappingService.deleteMapping(frontendModel);
+    
+    if (!deleted) {
+      return res.status(404).json({ error: `模型映射 ${frontendModel} 不存在` });
+    }
+    
+    const mappings = await kiroModelMappingService.getMappings();
+    res.json({
+      success: true,
+      data: {
+        mappings
+      }
+    });
+  } catch (error) {
+    logger.error('删除Kiro模型映射失败:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * 重置模型映射为默认值
+ * POST /api/kiro/model-mappings/reset
+ */
+router.post('/api/kiro/model-mappings/reset', authenticateApiKey, requireAdmin, async (req, res) => {
+  try {
+    await kiroModelMappingService.resetToDefault();
+    
+    const mappings = await kiroModelMappingService.getMappings();
+    res.json({
+      success: true,
+      data: {
+        mappings
+      }
+    });
+  } catch (error) {
+    logger.error('重置Kiro模型映射失败:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
  * Kiro聊天补全
  * POST /v1/kiro/chat/completions
  * Body: { messages, model, stream, tools, ... }
@@ -1071,7 +1196,76 @@ router.post('/v1/kiro/chat/completions', authenticateApiKey, async (req, res) =>
     ].join('\n');
   };
 
-  // 计算输入token数
+  // 计算输入token数（包含完整的 conversationState 结构，不仅仅是文本内容）
+  const calculateConversationStateTokens = (cs) => {
+    let totalText = '';
+    const history = Array.isArray(cs?.history) ? cs.history : [];
+
+    for (const h of history) {
+      if (h?.userInputMessage) {
+        // 用户消息内容
+        totalText += (h.userInputMessage.content ?? '') + '\n';
+        
+        // toolResults（工具调用结果，通常很大）
+        const ctx = h.userInputMessage.userInputMessageContext;
+        if (ctx?.toolResults && Array.isArray(ctx.toolResults)) {
+          for (const tr of ctx.toolResults) {
+            // toolUseId
+            totalText += (tr.toolUseId ?? '') + '\n';
+            // content 数组中的 text
+            if (Array.isArray(tr.content)) {
+              for (const item of tr.content) {
+                if (item?.text) {
+                  totalText += item.text + '\n';
+                }
+              }
+            }
+          }
+        }
+      } else if (h?.assistantResponseMessage) {
+        totalText += (h.assistantResponseMessage.content ?? '') + '\n';
+      }
+    }
+
+    // currentMessage
+    const cm = cs?.currentMessage?.userInputMessage;
+    if (cm) {
+      totalText += (cm.content ?? '') + '\n';
+      
+      // currentMessage 的 toolResults
+      const cmCtx = cm.userInputMessageContext;
+      if (cmCtx?.toolResults && Array.isArray(cmCtx.toolResults)) {
+        for (const tr of cmCtx.toolResults) {
+          totalText += (tr.toolUseId ?? '') + '\n';
+          if (Array.isArray(tr.content)) {
+            for (const item of tr.content) {
+              if (item?.text) {
+                totalText += item.text + '\n';
+              }
+            }
+          }
+        }
+      }
+      
+      // tools 定义（可能有很多工具）
+      if (cmCtx?.tools && Array.isArray(cmCtx.tools)) {
+        for (const tool of cmCtx.tools) {
+          const spec = tool?.toolSpecification || tool?.tool_specification;
+          if (spec) {
+            totalText += (spec.name ?? '') + '\n';
+            totalText += (spec.description ?? '') + '\n';
+            // inputSchema 也需要计算
+            if (spec.inputSchema) {
+              totalText += JSON.stringify(spec.inputSchema) + '\n';
+            }
+          }
+        }
+      }
+    }
+
+    return totalText;
+  };
+
   const buildPseudoMessagesFromConversationState = (cs) => {
     const out = [];
     const history = Array.isArray(cs?.history) ? cs.history : [];
@@ -1093,14 +1287,25 @@ router.post('/v1/kiro/chat/completions', authenticateApiKey, async (req, res) =>
   };
 
   const promptMessages = hasConversationState ? buildPseudoMessagesFromConversationState(rawConversationState) : messages;
-  const inputText = promptMessages.map(m => {
-    if (typeof m.content === 'string') return m.content;
-    if (Array.isArray(m.content)) {
-      return m.content.filter(c => c.type === 'text').map(c => c.text).join('');
-    }
-    return '';
-  }).join('\n');
-  const promptTokens = countStringTokens(inputText, model);
+  
+  logger.info(`[token-debug] hasConversationState=${hasConversationState}, model=${model}`);
+  
+  // 计算 promptTokens：如果是 conversationState 格式，需要计算完整结构的 token
+  let promptTokens;
+  if (hasConversationState) {
+    const fullText = calculateConversationStateTokens(rawConversationState);
+    promptTokens = countStringTokens(fullText, model);
+    logger.info(`[token-calc] conversationState mode: fullText length=${fullText.length}, promptTokens=${promptTokens}`);
+  } else {
+    const inputText = promptMessages.map(m => {
+      if (typeof m.content === 'string') return m.content;
+      if (Array.isArray(m.content)) {
+        return m.content.filter(c => c.type === 'text').map(c => c.text).join('');
+      }
+      return '';
+    }).join('\n');
+    promptTokens = countStringTokens(inputText, model);
+  }
 
   if (stream) {
     // 流式响应
@@ -1147,6 +1352,102 @@ router.post('/v1/kiro/chat/completions', authenticateApiKey, async (req, res) =>
         }
       });
 
+      // 累积每个工具调用的参数用于参数名映射
+      // 策略：智能边界缓冲 - 检测可能被截断的键名并暂存
+      const toolCallArgsBuffer = new Map(); // toolUseId -> accumulated args string
+      const toolCallPendingBuffer = new Map(); // toolUseId -> pending string (可能被截断的内容)
+      
+      // 需要替换的键名及其前缀（用于检测截断）
+      const KEY_MAPPINGS = [
+        { from: '"old_str"', to: '"old_string"' },
+        { from: '"new_str"', to: '"new_string"' },
+        { from: '"file_path"', to: '"filePath"' }
+      ];
+      
+      // 获取所有可能的截断前缀（如 "old_st, "old_s, "old_, 等）
+      // 注意：从 2 个字符开始，避免单个 " 导致过度暂存
+      const TRUNCATION_PREFIXES = [];
+      for (const mapping of KEY_MAPPINGS) {
+        const key = mapping.from;
+        // 生成从 2 到 len-1 长度的前缀
+        for (let i = 2; i < key.length; i++) {
+          TRUNCATION_PREFIXES.push(key.substring(0, i));
+        }
+      }
+      
+      // 参数名映射函数：修复 Kiro 上游模型返回的参数名与 Claude Code 工具定义不匹配的问题
+      // 支持多种分割情况：完整键名、不带开头引号、不带结尾引号等
+      const normalizeToolArgs = (argsStr) => {
+        if (!argsStr || typeof argsStr !== 'string') return argsStr;
+        
+        let normalized = argsStr;
+        
+        // Edit 工具参数映射 - 支持各种分割情况
+        // 1. 完整键名（带双引号）
+        normalized = normalized.replace(/"old_str"/g, '"old_string"');
+        normalized = normalized.replace(/"new_str"/g, '"new_string"');
+        normalized = normalized.replace(/"file_path"/g, '"filePath"');
+        
+        // 2. 不带开头引号（引号在上一个 chunk）
+        normalized = normalized.replace(/^old_str"/g, 'old_string"');
+        normalized = normalized.replace(/^new_str"/g, 'new_string"');
+        normalized = normalized.replace(/^file_path"/g, 'filePath"');
+        
+        // 3. 不带结尾引号（引号在下一个 chunk）
+        normalized = normalized.replace(/"old_str$/g, '"old_string');
+        normalized = normalized.replace(/"new_str$/g, '"new_string');
+        normalized = normalized.replace(/"file_path$/g, '"filePath');
+        
+        return normalized;
+      };
+      
+      // 检查字符串末尾是否可能是被截断的键名
+      const findTruncatedSuffix = (str) => {
+        if (!str) return null;
+        // 从最长的可能前缀开始检查
+        for (let len = Math.min(str.length, 12); len >= 1; len--) {
+          const suffix = str.substring(str.length - len);
+          if (TRUNCATION_PREFIXES.includes(suffix)) {
+            return suffix;
+          }
+        }
+        return null;
+      };
+      
+      // 用于追踪每个工具调用的索引（发送剩余 pending 时需要）
+      const toolCallIndexMap = new Map(); // toolUseId -> tool_call_index
+      
+      // 发送所有剩余的 pending 内容
+      const flushPendingBuffers = () => {
+        for (const [toolId, pending] of toolCallPendingBuffer) {
+          if (pending) {
+            const normalizedPending = normalizeToolArgs(pending);
+            const toolIndex = toolCallIndexMap.get(toolId) || 0;
+            const chunk = {
+              id,
+              object: 'chat.completion.chunk',
+              created,
+              model,
+              choices: [{
+                index: 0,
+                delta: {
+                  tool_calls: [{
+                    index: toolIndex,
+                    id: toolId,
+                    function: {
+                      arguments: normalizedPending
+                    }
+                  }]
+                },
+                finish_reason: null
+              }]
+            };
+            res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+            toolCallPendingBuffer.set(toolId, '');
+          }
+        }
+      };
+
       const onStreamData = (data) => {
         // 如果响应已结束，不再写入数据
         if (responseEnded) return;
@@ -1175,30 +1476,74 @@ router.post('/v1/kiro/chat/completions', authenticateApiKey, async (req, res) =>
             };
             res.write(`data: ${JSON.stringify(chunk)}\n\n`);
           } else if (data.type === 'tool_call_delta') {
-            // OpenAI 流式格式：后续发送工具调用参数
+            // OpenAI 流式格式：后续发送工具调用参数（智能边界缓冲）
             hasToolCall = true;
+            
+            const toolId = data.tool_call_id;
+            const delta = data.delta || '';
+            
+            // 记录工具调用索引（发送剩余 pending 时需要）
+            toolCallIndexMap.set(toolId, data.tool_call_index);
+            
             // 累积工具参数用于token计算
-            toolCallArgs += data.delta || '';
-            const chunk = {
-              id,
-              object: 'chat.completion.chunk',
-              created,
-              model,
-              choices: [{
-                index: 0,
-                delta: {
-                  tool_calls: [{
-                    index: data.tool_call_index, // 使用正确的工具调用索引
-                    id: data.tool_call_id, // 添加工具调用ID
-                    function: {
-                      arguments: data.delta
-                    }
-                  }]
-                },
-                finish_reason: null
-              }]
-            };
-            res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+            toolCallArgs += delta;
+            
+            // 累积到总 buffer（用于调试）
+            if (!toolCallArgsBuffer.has(toolId)) {
+              toolCallArgsBuffer.set(toolId, '');
+            }
+            toolCallArgsBuffer.set(toolId, toolCallArgsBuffer.get(toolId) + delta);
+            
+            // 获取上次暂存的 pending 内容
+            const pending = toolCallPendingBuffer.get(toolId) || '';
+            
+            // 拼接：pending + 当前 delta
+            const combined = pending + delta;
+            
+            // 检查拼接后的字符串末尾是否可能是被截断的键名
+            const truncatedSuffix = findTruncatedSuffix(combined);
+            
+            let toSend;
+            if (truncatedSuffix) {
+              // 末尾可能是截断的键名，暂存这部分
+              toSend = combined.substring(0, combined.length - truncatedSuffix.length);
+              toolCallPendingBuffer.set(toolId, truncatedSuffix);
+            } else {
+              // 没有截断，全部发送
+              toSend = combined;
+              toolCallPendingBuffer.set(toolId, '');
+            }
+            
+            // 如果有内容要发送
+            if (toSend) {
+              const normalizedDelta = normalizeToolArgs(toSend);
+              
+              // 调试日志：检查规范化前后的内容
+              if (toSend !== normalizedDelta) {
+                logger.info(`[tool-arg-normalize] 替换前: ${toSend.substring(0, 50)}, 替换后: ${normalizedDelta.substring(0, 50)}`);
+              }
+              
+              const chunk = {
+                id,
+                object: 'chat.completion.chunk',
+                created,
+                model,
+                choices: [{
+                  index: 0,
+                  delta: {
+                    tool_calls: [{
+                      index: data.tool_call_index,
+                      id: data.tool_call_id,
+                      function: {
+                        arguments: normalizedDelta
+                      }
+                    }]
+                  },
+                  finish_reason: null
+                }]
+              };
+              res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+            }
           } else if (data.type === 'tool_calls') {
             // 兼容旧格式：一次性发送完整的工具调用
             hasToolCall = true;
@@ -1288,6 +1633,9 @@ router.post('/v1/kiro/chat/completions', authenticateApiKey, async (req, res) =>
         // 如果响应已结束，直接返回
         if (responseEnded) return;
 
+        // 流结束后，发送所有剩余的 pending 内容
+        flushPendingBuffers();
+
         // 计算输出token数（包括文本内容和工具调用参数）
         const completionTokens = countStringTokens(fullContent + toolCallArgs, model);
         const totalTokens = effectivePromptTokens + completionTokens;
@@ -1330,9 +1678,14 @@ router.post('/v1/kiro/chat/completions', authenticateApiKey, async (req, res) =>
         return;
       }
 
+      // 流结束后，发送所有剩余的 pending 内容
+      flushPendingBuffers();
+
       // 计算输出token数（包括文本内容和工具调用参数）
       const completionTokens = countStringTokens(fullContent + toolCallArgs, model);
       const totalTokens = promptTokens + completionTokens;
+
+      logger.info(`[token-usage] promptTokens=${promptTokens}, completionTokens=${completionTokens}, totalTokens=${totalTokens}`);
 
       // 发送带usage的finish chunk
       try {

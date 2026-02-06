@@ -9,6 +9,11 @@ import {
   getKiroAccountConsumption,
   getRequestUsageStats,
   getRequestUsageLogs,
+  getKiroModels,
+  getKiroModelMappings,
+  addKiroModelMapping,
+  deleteKiroModelMapping,
+  resetKiroModelMappings,
   type UserQuotaItem,
   type QuotaConsumption,
   type KiroConsumptionStats,
@@ -16,6 +21,8 @@ import {
   type KiroConsumptionLog,
   type RequestUsageStats,
   type RequestUsageLogItem,
+  type KiroModel,
+  type KiroModelMappings,
 } from '@/lib/api';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -46,6 +53,9 @@ import {
 import { MorphingSquare } from '@/components/ui/morphing-square';
 import { Gemini, Claude, OpenAI, Qwen } from '@lobehub/icons';
 import Toaster, { ToasterRef } from '@/components/ui/toast';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { IconPlus, IconTrash, IconRefresh } from '@tabler/icons-react';
 
 export default function AnalyticsPage() {
   const toasterRef = useRef<ToasterRef>(null);
@@ -55,6 +65,11 @@ export default function AnalyticsPage() {
   const [kiroStats, setKiroStats] = useState<KiroConsumptionStats | null>(null);
   const [kiroAccounts, setKiroAccounts] = useState<KiroAccount[]>([]);
   const [kiroLogs, setKiroLogs] = useState<KiroConsumptionLog[]>([]);
+  const [kiroModels, setKiroModels] = useState<KiroModel[]>([]);
+  const [kiroModelMappings, setKiroModelMappings] = useState<KiroModelMappings>({});
+  const [newFrontendModel, setNewFrontendModel] = useState('');
+  const [newKiroModel, setNewKiroModel] = useState('');
+  const [isAddingMapping, setIsAddingMapping] = useState(false);
   const [requestStats, setRequestStats] = useState<RequestUsageStats | null>(null);
   const [requestLogs, setRequestLogs] = useState<RequestUsageLogItem[]>([]);
   const [currentPage, setCurrentPage] = useState(1);
@@ -63,7 +78,7 @@ export default function AnalyticsPage() {
   const [totalRecords, setTotalRecords] = useState(0);
   const [antigravityTotalRecords, setAntigravityTotalRecords] = useState(0); // Antigravity 总记录数
   const [requestTotalRecords, setRequestTotalRecords] = useState(0);
-  const [activeTab, setActiveTab] = useState<'antigravity' | 'kiro' | 'qwen' | 'codex' | 'gemini-cli' | 'zai-tts' | 'zai-image'>('antigravity');
+  const [activeTab, setActiveTab] = useState<'antigravity' | 'kiro' | 'qwen' | 'codex' | 'gemini-cli' | 'zai-tts' | 'zai-image'>('kiro');
   const [isLoading, setIsLoading] = useState(true);
   const pageSize = 50;
 
@@ -88,12 +103,16 @@ export default function AnalyticsPage() {
         const endIndex = startIndex + pageSize;
         setConsumptions(consumptionsData.slice(startIndex, endIndex));
       } else if (activeTab === 'kiro') {
-        const [statsData, accountsData] = await Promise.all([
+        const [statsData, accountsData, modelsData, mappingsData] = await Promise.all([
           getKiroConsumptionStats(),
-          getKiroAccounts()
+          getKiroAccounts(),
+          getKiroModels().catch(() => ({ data: [] })),
+          getKiroModelMappings().catch(() => ({}))
         ]);
         setKiroStats(statsData);
         setKiroAccounts(accountsData);
+        setKiroModels(modelsData.data || []);
+        setKiroModelMappings(mappingsData || {});
 
         // 加载所有账号的消费记录并聚合
         await loadKiroLogs(accountsData);
@@ -291,85 +310,17 @@ export default function AnalyticsPage() {
           >
             <SelectTrigger className="w-[160px] h-9">
               <SelectValue>
-                {activeTab === 'antigravity' ? (
-                  <span className="flex items-center gap-2">
-                    <img src="/antigravity-logo.png" alt="" className="size-4 rounded" />
-                    Antigravity
-                  </span>
-                ) : activeTab === 'kiro' ? (
-                  <span className="flex items-center gap-2">
-                    <img src="/kiro.png" alt="" className="size-4 rounded" />
-                    Kiro
-                  </span>
-                ) : activeTab === 'qwen' ? (
-                  <span className="flex items-center gap-2">
-                    <Qwen className="size-4" />
-                    Qwen
-                  </span>
-                ) : activeTab === 'zai-tts' ? (
-                  <span className="flex items-center gap-2">
-                    <OpenAI className="size-4" />
-                    ZAI TTS
-                  </span>
-                ) : activeTab === 'zai-image' ? (
-                  <span className="flex items-center gap-2">
-                    <OpenAI className="size-4" />
-                    ZAI Image
-                  </span>
-                ) : activeTab === 'gemini-cli' ? (
-                  <span className="flex items-center gap-2">
-                    <Gemini.Color className="size-4" />
-                    GeminiCLI
-                  </span>
-                ) : (
-                  <span className="flex items-center gap-2">
-                    <OpenAI className="size-4" />
-                    Codex
-                  </span>
-                )}
-              </SelectValue>
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="antigravity">
-                <span className="flex items-center gap-2">
-                  <img src="/antigravity-logo.png" alt="" className="size-4 rounded" />
-                  Antigravity
-                </span>
-              </SelectItem>
-              <SelectItem value="kiro">
                 <span className="flex items-center gap-2">
                   <img src="/kiro.png" alt="" className="size-4 rounded" />
                   Kiro
                 </span>
-              </SelectItem>
-              <SelectItem value="qwen">
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="kiro">
                 <span className="flex items-center gap-2">
-                  <Qwen className="size-4" />
-                  Qwen
-                </span>
-              </SelectItem>
-              <SelectItem value="zai-tts">
-                <span className="flex items-center gap-2">
-                  <OpenAI className="size-4" />
-                  ZAI TTS
-                </span>
-              </SelectItem>
-              <SelectItem value="zai-image">
-                <span className="flex items-center gap-2">
-                  <OpenAI className="size-4" />
-                  ZAI Image
-                </span>
-              </SelectItem>
-              <SelectItem value="gemini-cli">
-                <span className="flex items-center gap-2">
-                  <Gemini.Color className="size-4" />
-                  GeminiCLI
-                </span>
-              </SelectItem>
-              <SelectItem value="codex">
-                <span className="flex items-center gap-2">
-                  <OpenAI className="size-4" />
-                  Codex
+                  <img src="/kiro.png" alt="" className="size-4 rounded" />
+                  Kiro
                 </span>
               </SelectItem>
             </SelectContent>
@@ -785,6 +736,168 @@ export default function AnalyticsPage() {
                     <p className="text-sm">暂无消费数据</p>
                   </div>
                 )}
+              </CardContent>
+            </Card>
+
+            {/* 可用模型（从 Kiro 获取的完整列表） */}
+            <Card className="mb-6">
+              <CardHeader>
+                <CardTitle>可用模型</CardTitle>
+                <CardDescription>
+                  从 Kiro 获取的完整模型列表（共 {kiroModels.length} 个）
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                {kiroModels.length === 0 ? (
+                  <div className="text-center py-8 text-muted-foreground">
+                    <p className="text-sm">暂无可用模型或加载失败</p>
+                  </div>
+                ) : (
+                  <div className="flex flex-wrap gap-2">
+                    {kiroModels.map((model) => (
+                      <Badge key={model.id} variant="secondary" className="font-mono text-sm py-1 px-3">
+                        {model.id}
+                      </Badge>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* 模型映射 */}
+            <Card className="mb-6">
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle>模型映射</CardTitle>
+                    <CardDescription>
+                      前端模型名 → Kiro 真实模型名（共 {Object.keys(kiroModelMappings).length} 个映射）
+                    </CardDescription>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={async () => {
+                      try {
+                        const mappings = await resetKiroModelMappings();
+                        setKiroModelMappings(mappings);
+                        toasterRef.current?.show({
+                          title: '重置成功',
+                          message: '模型映射已重置为默认值',
+                          variant: 'success',
+                          position: 'top-right',
+                        });
+                      } catch (err) {
+                        toasterRef.current?.show({
+                          title: '重置失败',
+                          message: err instanceof Error ? err.message : '重置模型映射失败',
+                          variant: 'error',
+                          position: 'top-right',
+                        });
+                      }
+                    }}
+                  >
+                    <IconRefresh className="size-4 mr-1" />
+                    重置默认
+                  </Button>
+                </div>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-3">
+                  {/* 现有映射列表 */}
+                  {Object.entries(kiroModelMappings).map(([frontendModel, kiroModel]) => (
+                    <div key={frontendModel} className="flex items-center gap-2 text-sm">
+                      <Badge variant="outline" className="font-mono">
+                        {frontendModel}
+                      </Badge>
+                      <span className="text-muted-foreground">→</span>
+                      <Badge variant="secondary" className="font-mono">
+                        {kiroModel}
+                      </Badge>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 w-6 p-0 ml-auto text-destructive hover:text-destructive"
+                        onClick={async () => {
+                          try {
+                            const mappings = await deleteKiroModelMapping(frontendModel);
+                            setKiroModelMappings(mappings);
+                            toasterRef.current?.show({
+                              title: '删除成功',
+                              message: `已删除映射: ${frontendModel}`,
+                              variant: 'success',
+                              position: 'top-right',
+                            });
+                          } catch (err) {
+                            toasterRef.current?.show({
+                              title: '删除失败',
+                              message: err instanceof Error ? err.message : '删除模型映射失败',
+                              variant: 'error',
+                              position: 'top-right',
+                            });
+                          }
+                        }}
+                      >
+                        <IconTrash className="size-3" />
+                      </Button>
+                    </div>
+                  ))}
+                  
+                  {/* 添加新映射 */}
+                  <div className="flex items-center gap-2 pt-3 border-t">
+                    <Input
+                      placeholder="前端模型名"
+                      value={newFrontendModel}
+                      onChange={(e) => setNewFrontendModel(e.target.value)}
+                      className="font-mono text-sm h-8 w-[200px]"
+                    />
+                    <span className="text-muted-foreground">→</span>
+                    <Select value={newKiroModel} onValueChange={setNewKiroModel}>
+                      <SelectTrigger className="font-mono text-sm h-8 w-[220px]">
+                        <SelectValue placeholder="选择 Kiro 模型" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {kiroModels.map((model) => (
+                          <SelectItem key={model.id} value={model.id}>
+                            {model.display_name || model.id}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={!newFrontendModel.trim() || !newKiroModel.trim() || isAddingMapping}
+                      onClick={async () => {
+                        if (!newFrontendModel.trim() || !newKiroModel.trim()) return;
+                        setIsAddingMapping(true);
+                        try {
+                          const mappings = await addKiroModelMapping(newFrontendModel.trim(), newKiroModel.trim());
+                          setKiroModelMappings(mappings);
+                          setNewFrontendModel('');
+                          setNewKiroModel('');
+                          toasterRef.current?.show({
+                            title: '添加成功',
+                            message: `已添加映射: ${newFrontendModel.trim()} → ${newKiroModel.trim()}`,
+                            variant: 'success',
+                            position: 'top-right',
+                          });
+                        } catch (err) {
+                          toasterRef.current?.show({
+                            title: '添加失败',
+                            message: err instanceof Error ? err.message : '添加模型映射失败',
+                            variant: 'error',
+                            position: 'top-right',
+                          });
+                        } finally {
+                          setIsAddingMapping(false);
+                        }
+                      }}
+                    >
+                      <IconPlus className="size-4" />
+                    </Button>
+                  </div>
+                </div>
               </CardContent>
             </Card>
 

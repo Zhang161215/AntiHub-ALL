@@ -2185,6 +2185,100 @@ export async function upsertKiroSubscriptionModelRule(
   return result.data;
 }
 
+// ==================== Kiro 模型列表 API ====================
+
+export interface KiroModel {
+  id: string;
+  object: string;
+  created: number;
+  owned_by: string;
+}
+
+export interface KiroModelsResponse {
+  object: string;
+  data: KiroModel[];
+}
+
+export interface KiroModelMappings {
+  [key: string]: string;  // 前端模型名 -> Kiro真实模型名
+}
+
+/**
+ * 获取 Kiro 可用模型列表
+ */
+export async function getKiroModels(): Promise<KiroModelsResponse> {
+  return fetchWithAuth<KiroModelsResponse>(
+    `${API_BASE_URL}/v1/models`,
+    { 
+      method: 'GET',
+      headers: {
+        'X-Api-Type': 'kiro'
+      }
+    }
+  );
+}
+
+/**
+ * 获取 Kiro 模型映射表
+ */
+export async function getKiroModelMappings(): Promise<KiroModelMappings> {
+  const result = await fetchWithAuth<{ success: boolean; data: { mappings: KiroModelMappings } }>(
+    `${API_BASE_URL}/api/kiro/model-mappings`,
+    { method: 'GET' }
+  );
+  return result.data.mappings;
+}
+
+/**
+ * 批量更新 Kiro 模型映射表
+ */
+export async function updateKiroModelMappings(mappings: KiroModelMappings): Promise<KiroModelMappings> {
+  const result = await fetchWithAuth<{ success: boolean; data: { mappings: KiroModelMappings } }>(
+    `${API_BASE_URL}/api/kiro/model-mappings`,
+    { 
+      method: 'PUT',
+      body: JSON.stringify({ mappings })
+    }
+  );
+  return result.data.mappings;
+}
+
+/**
+ * 添加或更新单个 Kiro 模型映射
+ */
+export async function addKiroModelMapping(frontendModel: string, kiroModel: string): Promise<KiroModelMappings> {
+  const result = await fetchWithAuth<{ success: boolean; data: { mappings: KiroModelMappings } }>(
+    `${API_BASE_URL}/api/kiro/model-mappings`,
+    { 
+      method: 'POST',
+      body: JSON.stringify({ frontend_model: frontendModel, kiro_model: kiroModel })
+    }
+  );
+  return result.data.mappings;
+}
+
+/**
+ * 删除单个 Kiro 模型映射
+ */
+export async function deleteKiroModelMapping(frontendModel: string): Promise<KiroModelMappings> {
+  const result = await fetchWithAuth<{ success: boolean; data: { mappings: KiroModelMappings } }>(
+    `${API_BASE_URL}/api/kiro/model-mappings/${encodeURIComponent(frontendModel)}`,
+    { method: 'DELETE' }
+  );
+  return result.data.mappings;
+}
+
+/**
+ * 重置 Kiro 模型映射为默认值
+ */
+export async function resetKiroModelMappings(): Promise<KiroModelMappings> {
+  const result = await fetchWithAuth<{ success: boolean; data: { mappings: KiroModelMappings } }>(
+    `${API_BASE_URL}/api/kiro/model-mappings/reset`,
+    { method: 'POST' }
+  );
+  return result.data.mappings;
+}
+
 // ==================== Codex 账号管理相关 API ====================
 
 export interface CodexAccount {
