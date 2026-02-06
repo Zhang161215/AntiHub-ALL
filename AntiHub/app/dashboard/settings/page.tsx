@@ -4,7 +4,9 @@ import { useEffect, useState, useRef } from 'react';
 import {
   deleteAPIKey,
   generateAPIKey,
+  getAPIKey,
   getAPIKeys,
+  updateAPIKeyType,
   getCodexFallbackConfig,
   getCurrentUser,
   getKiroSubscriptionModelRules,
@@ -24,6 +26,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import {
   Dialog,
   DialogContent,
@@ -55,10 +58,19 @@ export default function SettingsPage() {
   const [newApiKey, setNewApiKey] = useState<string>('');
   const [showApiKey, setShowApiKey] = useState(false);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
+  const [isViewKeyDialogOpen, setIsViewKeyDialogOpen] = useState(false);
+  const [viewingKey, setViewingKey] = useState<PluginAPIKey | null>(null);
+  const [viewingKeyValue, setViewingKeyValue] = useState<string>('');
+  const [showViewingKeyValue, setShowViewingKeyValue] = useState(false);
+  const [isViewingKeyLoading, setIsViewingKeyLoading] = useState(false);
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isGenerating, setIsGenerating] = useState(false);
   const [deletingKeyId, setDeletingKeyId] = useState<number | null>(null);
+  const [isEditTypeDialogOpen, setIsEditTypeDialogOpen] = useState(false);
+  const [editingKey, setEditingKey] = useState<PluginAPIKey | null>(null);
+  const [editingConfigType, setEditingConfigType] = useState<PluginAPIKey['config_type']>('antigravity');
+  const [isUpdatingKeyType, setIsUpdatingKeyType] = useState(false);
   const [selectedConfigType, setSelectedConfigType] = useState<'antigravity' | 'kiro' | 'qwen' | 'codex' | 'gemini-cli' | 'zai-tts' | 'zai-image'>('antigravity');
   const [configTypePage, setConfigTypePage] = useState(0);
   const [keyName, setKeyName] = useState('');
@@ -87,6 +99,8 @@ export default function SettingsPage() {
   const [isCodexFallbackLoading, setIsCodexFallbackLoading] = useState(false);
   const [isCodexFallbackSaving, setIsCodexFallbackSaving] = useState(false);
   const [isCodexFallbackClearing, setIsCodexFallbackClearing] = useState(false);
+  const [showCodexFallbackKey, setShowCodexFallbackKey] = useState(false);
+  const [isCodexFallbackRevealing, setIsCodexFallbackRevealing] = useState(false);
 
   useEffect(() => {
     const base = getPublicApiBaseUrl();
@@ -118,6 +132,7 @@ export default function SettingsPage() {
       setCodexFallbackHasKey(Boolean(data.has_key));
       setCodexFallbackKeyMasked(data.api_key_masked || null);
       setCodexFallbackKey('');
+      setShowCodexFallbackKey(false);
     } catch (err) {
       // 不阻塞设置页，其它功能不依赖兜底配置
       toasterRef.current?.show({
@@ -334,6 +349,36 @@ export default function SettingsPage() {
     setShowApiKey(false);
   };
 
+  const handleCloseViewKeyDialog = () => {
+    setIsViewKeyDialogOpen(false);
+    setViewingKey(null);
+    setViewingKeyValue('');
+    setShowViewingKeyValue(false);
+    setIsViewingKeyLoading(false);
+  };
+
+  const handleOpenViewKeyDialog = async (key: PluginAPIKey) => {
+    setViewingKey(key);
+    setViewingKeyValue('');
+    setShowViewingKeyValue(false);
+    setIsViewKeyDialogOpen(true);
+
+    setIsViewingKeyLoading(true);
+    try {
+      const data = await getAPIKey(key.id);
+      setViewingKeyValue(data.key);
+    } catch (err) {
+      toasterRef.current?.show({
+        title: '加载失败',
+        message: err instanceof Error ? err.message : '获取API密钥失败',
+        variant: 'error',
+        position: 'top-right',
+      });
+    } finally {
+      setIsViewingKeyLoading(false);
+    }
+  };
+
   const handleDeleteKey = async (keyId: number) => {
     if (!confirm('确定要删除此API密钥吗？删除后将无法恢复，所有使用此密钥的应用将无法访问 AI 资源。')) {
       return;
@@ -363,6 +408,44 @@ export default function SettingsPage() {
     }
   };
 
+  const handleOpenEditTypeDialog = (key: PluginAPIKey) => {
+    setEditingKey(key);
+    setEditingConfigType(key.config_type);
+    setIsEditTypeDialogOpen(true);
+  };
+
+  const handleUpdateKeyType = async () => {
+    if (!editingKey) return;
+    if (editingConfigType === editingKey.config_type) {
+      setIsEditTypeDialogOpen(false);
+      setEditingKey(null);
+      return;
+    }
+
+    setIsUpdatingKeyType(true);
+    try {
+      await updateAPIKeyType(editingKey.id, editingConfigType);
+      toasterRef.current?.show({
+        title: '已更新',
+        message: 'API密钥类型已修改',
+        variant: 'success',
+        position: 'top-right',
+      });
+      await loadAPIKeys();
+      setIsEditTypeDialogOpen(false);
+      setEditingKey(null);
+    } catch (err) {
+      toasterRef.current?.show({
+        title: '更新失败',
+        message: err instanceof Error ? err.message : '更新API密钥类型失败',
+        variant: 'error',
+        position: 'top-right',
+      });
+    } finally {
+      setIsUpdatingKeyType(false);
+    }
+  };
+
   const handleCopyKey = (key: string) => {
     navigator.clipboard.writeText(key);
     toasterRef.current?.show({
@@ -371,6 +454,65 @@ export default function SettingsPage() {
       variant: 'success',
       position: 'top-right',
     });
+  };
+
+  const revealCodexFallbackKey = async () => {
+    if (!codexFallbackHasKey) return null;
+    if (codexFallbackKey.trim()) return codexFallbackKey.trim();
+
+    setIsCodexFallbackRevealing(true);
+    try {
+      const data = await getCodexFallbackConfig({ reveal_key: true });
+
+      setCodexFallbackHasKey(Boolean(data.has_key));
+      setCodexFallbackKeyMasked(data.api_key_masked || null);
+
+      const rawKey = (data.api_key || '').trim();
+      if (rawKey) {
+        setCodexFallbackKey(rawKey);
+      }
+
+      return rawKey || null;
+    } catch (err) {
+      toasterRef.current?.show({
+        title: '查看失败',
+        message: err instanceof Error ? err.message : '获取已保存 KEY 失败',
+        variant: 'error',
+        position: 'top-right',
+      });
+      return null;
+    } finally {
+      setIsCodexFallbackRevealing(false);
+    }
+  };
+
+  const handleToggleCodexFallbackKeyVisible = async () => {
+    const next = !showCodexFallbackKey;
+    setShowCodexFallbackKey(next);
+
+    if (next && codexFallbackHasKey && !codexFallbackKey.trim()) {
+      await revealCodexFallbackKey();
+    }
+  };
+
+  const handleCopyCodexFallbackKey = async () => {
+    let raw = codexFallbackKey.trim();
+
+    if (!raw && codexFallbackHasKey) {
+      raw = (await revealCodexFallbackKey())?.trim() || '';
+    }
+
+    if (!raw) {
+      toasterRef.current?.show({
+        title: '无法复制',
+        message: codexFallbackHasKey ? '请先点击查看获取 KEY 明文' : '请先输入 KEY',
+        variant: 'warning',
+        position: 'top-right',
+      });
+      return;
+    }
+
+    handleCopyKey(raw);
   };
 
   const handleSaveCodexFallback = async () => {
@@ -398,6 +540,7 @@ export default function SettingsPage() {
       setCodexFallbackHasKey(Boolean(data.has_key));
       setCodexFallbackKeyMasked(data.api_key_masked || null);
       setCodexFallbackKey('');
+      setShowCodexFallbackKey(false);
 
       toasterRef.current?.show({
         title: '已保存',
@@ -427,6 +570,7 @@ export default function SettingsPage() {
       setCodexFallbackHasKey(Boolean(data.has_key));
       setCodexFallbackKeyMasked(data.api_key_masked || null);
       setCodexFallbackKey('');
+      setShowCodexFallbackKey(false);
 
       toasterRef.current?.show({
         title: '已清空',
@@ -503,7 +647,7 @@ export default function SettingsPage() {
                         <th className="text-left p-3 text-sm font-medium min-w-[180px]">密钥</th>
                         <th className="text-left p-3 text-sm font-medium min-w-[130px]">创建时间</th>
                         <th className="text-left p-3 text-sm font-medium min-w-[130px]">最后使用</th>
-                        <th className="text-right p-3 text-sm font-medium min-w-[80px]">操作</th>
+                        <th className="text-right p-3 text-sm font-medium min-w-[120px]">操作</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -544,19 +688,42 @@ export default function SettingsPage() {
                             }
                           </td>
                           <td className="p-3 text-right">
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              onClick={() => handleDeleteKey(key.id)}
-                              disabled={deletingKeyId === key.id}
-                              className="text-red-500 hover:text-red-600 hover:bg-red-500/10"
-                            >
-                              {deletingKeyId === key.id ? (
-                                <MorphingSquare className="size-4" />
-                              ) : (
-                                <IconTrash className="size-4" />
-                              )}
-                            </Button>
+                            <div className="flex items-center justify-end gap-1">
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                onClick={() => handleOpenViewKeyDialog(key)}
+                                disabled={deletingKeyId === key.id || isUpdatingKeyType}
+                                className="text-muted-foreground hover:text-foreground hover:bg-muted/60"
+                                aria-label="查看密钥"
+                              >
+                                <IconEye className="size-4" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                onClick={() => handleOpenEditTypeDialog(key)}
+                                disabled={deletingKeyId === key.id || isUpdatingKeyType}
+                                className="text-muted-foreground hover:text-foreground hover:bg-muted/60"
+                                aria-label="修改类型"
+                              >
+                                <IconSettings className="size-4" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                onClick={() => handleDeleteKey(key.id)}
+                                disabled={deletingKeyId === key.id || isUpdatingKeyType}
+                                className="text-red-500 hover:text-red-600 hover:bg-red-500/10"
+                                aria-label="删除"
+                              >
+                                {deletingKeyId === key.id ? (
+                                  <MorphingSquare className="size-4" />
+                                ) : (
+                                  <IconTrash className="size-4" />
+                                )}
+                              </Button>
+                            </div>
                           </td>
                         </tr>
                       ))}
@@ -647,17 +814,53 @@ export default function SettingsPage() {
                       />
                     </td>
                     <td className="p-3 align-top">
-                      <Input
-                        type="password"
-                        value={codexFallbackKey}
-                        onChange={(e) => setCodexFallbackKey(e.target.value)}
-                        placeholder={codexFallbackHasKey ? (codexFallbackKeyMasked || '已保存') : '请输入KEY'}
-                        className="font-mono text-sm"
-                        disabled={isCodexFallbackLoading || isCodexFallbackSaving || isCodexFallbackClearing}
-                      />
+                      <div className="flex gap-2">
+                        <Input
+                          type={showCodexFallbackKey ? 'text' : 'password'}
+                          value={codexFallbackKey}
+                          onChange={(e) => setCodexFallbackKey(e.target.value)}
+                          placeholder={codexFallbackHasKey ? (codexFallbackKeyMasked || '已保存') : '请输入KEY'}
+                          className="font-mono text-sm"
+                          disabled={isCodexFallbackLoading || isCodexFallbackSaving || isCodexFallbackClearing}
+                        />
+                        <Button
+                          variant="outline"
+                          size="icon"
+                          onClick={handleToggleCodexFallbackKeyVisible}
+                          disabled={
+                            isCodexFallbackLoading ||
+                            isCodexFallbackSaving ||
+                            isCodexFallbackClearing ||
+                            isCodexFallbackRevealing
+                          }
+                          aria-label={showCodexFallbackKey ? '隐藏 KEY' : '查看 KEY'}
+                        >
+                          {isCodexFallbackRevealing ? (
+                            <MorphingSquare className="size-4" />
+                          ) : showCodexFallbackKey ? (
+                            <IconEyeOff className="size-4" />
+                          ) : (
+                            <IconEye className="size-4" />
+                          )}
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="icon"
+                          onClick={handleCopyCodexFallbackKey}
+                          disabled={
+                            isCodexFallbackLoading ||
+                            isCodexFallbackSaving ||
+                            isCodexFallbackClearing ||
+                            isCodexFallbackRevealing
+                          }
+                          aria-label="复制 KEY"
+                        >
+                          <IconCopy className="size-4" />
+                        </Button>
+                      </div>
                       {codexFallbackHasKey && !codexFallbackKey.trim() && (
                         <p className="mt-2 text-xs text-muted-foreground">
-                          已保存 KEY（不会在前端显示明文）。留空并保存 = 不修改 KEY。
+                          已保存 KEY。点击右侧“眼睛”可查看明文；留空并保存 = 不修改 KEY。
                         </p>
                       )}
                     </td>
@@ -1087,13 +1290,150 @@ export default function SettingsPage() {
         </DialogContent>
       </Dialog>
 
+      {/* 修改 API Key 类型弹窗 */}
+      <Dialog
+        open={isEditTypeDialogOpen}
+        onOpenChange={(open) => {
+          setIsEditTypeDialogOpen(open);
+          if (!open) setEditingKey(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-[500px]">
+          <DialogHeader>
+            <DialogTitle>修改密钥类型</DialogTitle>
+            <DialogDescription>
+              {editingKey ? `密钥：${editingKey.name}` : '修改此密钥走的渠道类型'}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label>新类型</Label>
+              <Select
+                value={editingConfigType}
+                onValueChange={(value) => setEditingConfigType(value as PluginAPIKey['config_type'])}
+                disabled={isUpdatingKeyType}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="请选择类型" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="antigravity">Antigravity</SelectItem>
+                  <SelectItem value="kiro">Kiro</SelectItem>
+                  <SelectItem value="qwen">Qwen</SelectItem>
+                  <SelectItem value="codex">Codex</SelectItem>
+                  <SelectItem value="gemini-cli">GeminiCLI</SelectItem>
+                  <SelectItem value="zai-tts">ZAI TTS</SelectItem>
+                  <SelectItem value="zai-image">ZAI Image</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                修改后，使用该密钥的请求会走新类型对应的渠道。
+              </p>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setIsEditTypeDialogOpen(false)}
+              disabled={isUpdatingKeyType}
+            >
+              取消
+            </Button>
+            <Button
+              onClick={handleUpdateKeyType}
+              disabled={
+                isUpdatingKeyType ||
+                !editingKey ||
+                editingConfigType === editingKey.config_type
+              }
+            >
+              {isUpdatingKeyType ? (
+                <>
+                  <MorphingSquare className="size-4 mr-2" />
+                  保存中...
+                </>
+              ) : (
+                '保存'
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 查看 API Key 弹窗 */}
+      <Dialog
+        open={isViewKeyDialogOpen}
+        onOpenChange={(open) => {
+          if (!open) {
+            handleCloseViewKeyDialog();
+            return;
+          }
+          setIsViewKeyDialogOpen(true);
+        }}
+      >
+        <DialogContent className="sm:max-w-[500px]">
+          <DialogHeader>
+            <DialogTitle>查看API密钥</DialogTitle>
+            <DialogDescription>
+              {viewingKey ? `密钥：${viewingKey.name}` : '查看并复制你的 API 密钥'}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label>API密钥</Label>
+              <div className="flex gap-2">
+                <Input
+                  value={showViewingKeyValue ? (viewingKeyValue || '') : maskApiKey(viewingKeyValue || '')}
+                  readOnly
+                  className="font-mono text-sm"
+                  placeholder={isViewingKeyLoading ? '加载中...' : ''}
+                  disabled={isViewingKeyLoading}
+                />
+                <Button
+                  variant="outline"
+                  size="icon"
+                  onClick={() => setShowViewingKeyValue(!showViewingKeyValue)}
+                  disabled={isViewingKeyLoading || !viewingKeyValue}
+                  aria-label={showViewingKeyValue ? '隐藏密钥' : '显示密钥'}
+                >
+                  {showViewingKeyValue ? (
+                    <IconEyeOff className="size-4" />
+                  ) : (
+                    <IconEye className="size-4" />
+                  )}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  onClick={() => handleCopyKey(viewingKeyValue)}
+                  disabled={isViewingKeyLoading || !viewingKeyValue}
+                  aria-label="复制密钥"
+                >
+                  <IconCopy className="size-4" />
+                </Button>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                建议仅在可信环境查看/复制密钥，避免在公共场景暴露。
+              </p>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button onClick={handleCloseViewKeyDialog}>关闭</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* API Key 成功弹窗 */}
       <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
         <DialogContent className="sm:max-w-[500px]">
           <DialogHeader>
             <DialogTitle>生成成功</DialogTitle>
             <DialogDescription>
-              请妥善保存此密钥，关闭后将无法再次查看完整内容
+              请妥善保管此密钥，避免泄露；后续可在密钥列表中再次查看/复制。
             </DialogDescription>
           </DialogHeader>
 

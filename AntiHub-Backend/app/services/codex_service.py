@@ -717,13 +717,25 @@ def _parse_wham_usage(payload: Any, *, now: datetime) -> Dict[str, Any]:
     cr_limit_reached_bool = cr_limit_reached if isinstance(cr_limit_reached, bool) else None
     cr_primary = code_review.get("primary_window") if "primary_window" in code_review else code_review.get("primaryWindow")
 
+    primary_window = _parse_wham_window(primary, now=now, allowed=allowed, limit_reached=limit_reached)
+    secondary_window = _parse_wham_window(secondary, now=now, allowed=allowed, limit_reached=limit_reached)
+
+    # Free 订阅：目前实测可能拿不到周限（secondary_window）字段；
+    # 且一周只有一个 5 小时窗口，所以周限“重置时间”应沿用 5h 的 reset_at。
+    if (
+        secondary_window.get("used_percent") is None
+        and secondary_window.get("reset_at") is None
+        and isinstance(primary_window.get("reset_at"), datetime)
+    ):
+        secondary_window["reset_at"] = primary_window["reset_at"]
+
     return {
         "plan_type": plan_type,
         "rate_limit": {
             "allowed": allowed,
             "limit_reached": limit_reached,
-            "primary_window": _parse_wham_window(primary, now=now, allowed=allowed, limit_reached=limit_reached),
-            "secondary_window": _parse_wham_window(secondary, now=now, allowed=allowed, limit_reached=limit_reached),
+            "primary_window": primary_window,
+            "secondary_window": secondary_window,
         },
         "code_review_rate_limit": {
             "allowed": cr_allowed_bool,
@@ -838,24 +850,31 @@ class CodexService:
         models = _get_supported_models()
         return {"object": "list", "data": [{"id": m, "object": "model"} for m in models]}
 
-    async def get_fallback_config(self, *, user_id: int) -> Dict[str, Any]:
+    async def get_fallback_config(self, *, user_id: int, reveal_key: bool = False) -> Dict[str, Any]:
         """
-        获取 CodexCLI 兜底服务配置（不返回明文 KEY）。
+        获取 CodexCLI 兜底服务配置。
+
+        约定：
+        - 默认不返回明文 KEY
+        - 当 reveal_key=True 时，返回 api_key 明文（仅当前用户可读）
         """
         cfg = await self.fallback_repo.get_by_user_id(user_id)
         if not cfg or not getattr(cfg, "is_active", True):
-            return {
+            data = {
                 "success": True,
                 "data": {
                     "platform": CODEX_FALLBACK_PLATFORM,
                     "base_url": None,
                     "has_key": False,
                     "api_key_masked": None,
+                    **({"api_key": None} if reveal_key else {}),
                 },
             }
+            return data
 
         masked = None
         has_key = False
+        raw_key = None
         try:
             raw_key = decrypt_secret(cfg.api_key)
             if (raw_key or "").strip():
@@ -865,16 +884,19 @@ class CodexService:
             # 解密失败按“未配置”处理，避免把异常扩散到设置页
             has_key = False
             masked = None
+            raw_key = None
 
-        return {
+        data: Dict[str, Any] = {
             "success": True,
             "data": {
                 "platform": CODEX_FALLBACK_PLATFORM,
                 "base_url": cfg.base_url,
                 "has_key": has_key,
                 "api_key_masked": masked,
+                **({"api_key": raw_key if has_key else None} if reveal_key else {}),
             },
         }
+        return data
 
     async def upsert_fallback_config(
         self,
@@ -2209,6 +2231,32 @@ class CodexService:
         """
         _ = raw_error
         now = _now_utc()
+        if retry_at is None:
+            # 优先使用已知的 reset_at（429 不一定给 Retry-After）
+            if bucket == "week":
+                existing = getattr(account, "limit_week_reset_at", None)
+                if isinstance(existing, datetime):
+                    if existing.tzinfo is None:
+                        existing = existing.replace(tzinfo=timezone.utc)
+                    if existing > now:
+                        retry_at = existing
+
+                # Free 订阅：可能没有周限反馈（消耗/重置都缺失），但 5h 的 reset_at 实际上是周重置
+                if retry_at is None and getattr(account, "limit_week_used_percent", None) is None:
+                    five_reset = getattr(account, "limit_5h_reset_at", None)
+                    if isinstance(five_reset, datetime):
+                        if five_reset.tzinfo is None:
+                            five_reset = five_reset.replace(tzinfo=timezone.utc)
+                        if five_reset > now:
+                            retry_at = five_reset
+            else:
+                existing = getattr(account, "limit_5h_reset_at", None)
+                if isinstance(existing, datetime):
+                    if existing.tzinfo is None:
+                        existing = existing.replace(tzinfo=timezone.utc)
+                    if existing > now:
+                        retry_at = existing
+
         if retry_at is None:
             retry_at = now + (timedelta(days=7) if bucket == "week" else timedelta(hours=5))
 

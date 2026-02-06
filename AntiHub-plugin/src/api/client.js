@@ -1,5 +1,6 @@
 import tokenManager from '../auth/token_manager.js';
 import config, { getApiEndpoint, getEndpointCount } from '../config/config.js';
+import { createGeminiSseParser } from './gemini_sse_parser.js';
 
 /**
  * 生成助手响应
@@ -100,62 +101,22 @@ export async function generateAssistantResponse(requestBody, callback, endpointI
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
-  let reasoningContent = ''; // 累积 reasoning_content
-  let toolCalls = [];
-
+  const parser = createGeminiSseParser(callback, { maxBufferSize: 1024 * 1024 });
   let chunkCount = 0;
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
     
-    const chunk = decoder.decode(value);
+    const chunk = decoder.decode(value, { stream: true });
     chunkCount++;
-    const lines = chunk.split('\n');
+    parser.feed(chunk);
+  }
 
-    for (const line of lines) {
-      const trimmedLine = typeof line === 'string' ? line.trim() : '';
-      if (!trimmedLine.startsWith('data:')) continue;
-
-      const jsonStr = trimmedLine.slice('data:'.length).trim();
-      if (!jsonStr || jsonStr === '[DONE]') continue;
-      try {
-        const data = JSON.parse(jsonStr);
-        
-        const parts = data.response?.candidates?.[0]?.content?.parts;
-        if (parts) {
-          for (const part of parts) {
-            if (part.thought === true) {
-              // Gemini 的思考内容转换为 OpenAI 兼容的 reasoning_content 格式
-              reasoningContent += part.text || '';
-              callback({ type: 'reasoning', content: part.text || '' });
-            } else if (part.text !== undefined) {
-              // 过滤掉空的非thought文本
-              if (part.text.trim() === '') {
-                continue;
-              }
-              callback({ type: 'text', content: part.text });
-            } else if (part.functionCall) {
-              toolCalls.push({
-                id: part.functionCall.id,
-                type: 'function',
-                function: {
-                  name: part.functionCall.name,
-                  arguments: JSON.stringify(part.functionCall.args)
-                }
-              });
-            }
-          }
-        }
-        
-        // 当遇到 finishReason 时，发送所有收集的工具调用
-        if (data.response?.candidates?.[0]?.finishReason && toolCalls.length > 0) {
-          callback({ type: 'tool_calls', tool_calls: toolCalls });
-          toolCalls = [];
-        }
-      } catch (e) {
-        // 忽略解析错误
-      }
-    }
+  // flush decoder internal buffer (multi-byte chars)
+  parser.feed(decoder.decode());
+  const { parseErrorCount } = parser.flush();
+  if (parseErrorCount > 0) {
+    console.debug(`[SSE] ignored ${parseErrorCount} JSON parse errors`);
   }
 }
 
