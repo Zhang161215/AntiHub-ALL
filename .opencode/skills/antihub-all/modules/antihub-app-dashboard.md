@@ -4,8 +4,8 @@ description: Kiro 模型映射管理功能：前端模型名映射到 Kiro 真�
 usage:
   created_at: 2026-02-06T02:48:05.881Z
   last_updated: 2026-02-06T02:48:05.881Z
-  access_count: 11
-  last_accessed: 2026-02-06T06:15:50.106Z
+  access_count: 12
+  last_accessed: 2026-02-06T12:06:56.223Z
 ---
 
 ## 模型映射架构

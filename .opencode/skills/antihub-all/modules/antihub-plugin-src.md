@@ -4,8 +4,8 @@ description: Kiro Edit 工具参数名映射问题及解决方案：上游返回
 usage:
   created_at: 2026-02-06T01:13:15.474Z
   last_updated: 2026-02-06T01:13:15.474Z
-  access_count: 19
-  last_accessed: 2026-02-06T06:15:50.105Z
+  access_count: 26
+  last_accessed: 2026-02-06T12:06:56.223Z
 ---
 
 ## 问题描述

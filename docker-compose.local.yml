@@ -11,3 +11,10 @@ services:
       context: ./AntiHub-plugin
       dockerfile: Dockerfile
 
+  web:
+    image: antihub-web:local
+    build:
+      context: ./AntiHub
+      dockerfile: Dockerfile
+      additional_contexts:
+        antihook: ./AntiHook
