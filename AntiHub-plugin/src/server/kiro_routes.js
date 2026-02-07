@@ -1744,9 +1744,12 @@ router.post('/v1/kiro/chat/completions', authenticateApiKey, async (req, res) =>
       else if (error.message.includes('没有可用的Kiro账号') ||
           error.message.includes('配额') ||
           error.message.includes('quota') ||
-          error.message.includes('limit')) {
+          error.message.includes('limit') ||
+          error.message.includes('错误: 429') ||
+          error.message.includes('INSUFFICIENT_MODEL_CAPACITY') ||
+          error.message.includes('high traffic')) {
         statusCode = 429; // Too Many Requests
-        errorMessage = '所有账号配额已耗尽，请稍后再试';
+        errorMessage = '上游模型当前繁忙或账号配额受限，请稍后重试';
         errorType = 'insufficient_quota';
       } else if (error.message.includes('认证') ||
                  error.message.includes('授权') ||
@@ -1966,9 +1969,12 @@ router.post('/v1/kiro/chat/completions', authenticateApiKey, async (req, res) =>
       else if (error.message.includes('没有可用的Kiro账号') ||
           error.message.includes('配额') ||
           error.message.includes('quota') ||
-          error.message.includes('limit')) {
+          error.message.includes('limit') ||
+          error.message.includes('错误: 429') ||
+          error.message.includes('INSUFFICIENT_MODEL_CAPACITY') ||
+          error.message.includes('high traffic')) {
         statusCode = 429; // Too Many Requests
-        errorMessage = '所有账号配额已耗尽，请稍后再试';
+        errorMessage = '上游模型当前繁忙或账号配额受限，请稍后重试';
         errorType = 'insufficient_quota';
       } else if (error.message.includes('认证') ||
                  error.message.includes('授权') ||

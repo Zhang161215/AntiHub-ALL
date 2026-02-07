@@ -113,16 +113,42 @@ export default function AnalyticsPage() {
         const endIndex = startIndex + pageSize;
         setConsumptions(consumptionsData.slice(startIndex, endIndex));
       } else if (activeTab === 'kiro') {
-        const [statsData, accountsData, modelsData, mappingsData] = await Promise.all([
+        const [statsData, accountsData] = await Promise.all([
           getKiroConsumptionStats(),
           getKiroAccounts(),
-          getKiroModels().catch(() => ({ data: [] })),
-          getKiroModelMappings().catch(() => ({}))
         ]);
+
+        const [modelsResult, mappingsResult] = await Promise.allSettled([
+          getKiroModels(),
+          getKiroModelMappings(),
+        ]);
+
         setKiroStats(statsData);
         setKiroAccounts(accountsData);
-        setKiroModels(modelsData.data || []);
-        setKiroModelMappings(mappingsData || {});
+
+        if (modelsResult.status === 'fulfilled') {
+          setKiroModels(modelsResult.value.data || []);
+        } else {
+          setKiroModels([]);
+          toasterRef.current?.show({
+            title: '模型列表加载失败',
+            message: modelsResult.reason instanceof Error ? modelsResult.reason.message : '请稍后重试',
+            variant: 'error',
+            position: 'top-right',
+          });
+        }
+
+        if (mappingsResult.status === 'fulfilled') {
+          setKiroModelMappings(mappingsResult.value || {});
+        } else {
+          setKiroModelMappings({});
+          toasterRef.current?.show({
+            title: '模型映射加载失败',
+            message: mappingsResult.reason instanceof Error ? mappingsResult.reason.message : '请稍后重试',
+            variant: 'error',
+            position: 'top-right',
+          });
+        }
 
         // 加载所有账号的消费记录并聚合
         await loadKiroLogs(accountsData);

@@ -1,13 +1,21 @@
 import database from '../db/database.js';
 import logger from '../utils/logger.js';
 
-// 默认模型映射（与 kiro.service.js 中的 KIRO_MODEL_MAP 保持一致）
+// 默认模型映射（使用服务器验证稳定的 dotted Kiro model id）
 const DEFAULT_MODEL_MAPPINGS = {
   'claude-sonnet-4-5': 'claude-sonnet-4.5',
   'claude-sonnet-4-5-20250929': 'claude-sonnet-4.5',
+  'claude-sonnet-4-5-20250929-thinking': 'claude-sonnet-4.5',
+  'claude-sonnet-4-5-thinking': 'claude-sonnet-4.5',
   'claude-sonnet-4-20250514': 'claude-sonnet-4',
   'claude-opus-4-5-20251101': 'claude-opus-4.5',
-  'claude-haiku-4-5-20251001': 'claude-haiku-4.5'
+  'claude-opus-4-5-20251101-thinking': 'claude-opus-4.5',
+  'claude-opus-4-6': 'claude-opus-4.6',
+  'claude-opus-4-6-20260205': 'claude-opus-4.6',
+  'claude-opus-4-6-20260205-thinking': 'claude-opus-4.6',
+  'claude-opus-4-6-thinking': 'claude-opus-4.6',
+  'claude-haiku-4-5-20251001': 'claude-haiku-4.5',
+  'claude-haiku-4-5-20251001-thinking': 'claude-haiku-4.5'
 };
 
 // 缓存 TTL

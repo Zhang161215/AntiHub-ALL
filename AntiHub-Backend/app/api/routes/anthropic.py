@@ -11,7 +11,7 @@ import json
 import os
 import tempfile
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, status, Request, Header
+from fastapi import APIRouter, Depends, HTTPException, status, Request, Header, Query
 from fastapi.responses import StreamingResponse, JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,7 +20,7 @@ from app.api.deps import get_plugin_api_service, get_db_session, get_redis
 from app.core.spec_guard import ensure_spec_allowed
 from app.models.user import User
 from app.services.plugin_api_service import PluginAPIService
-from app.services.kiro_service import KiroService
+from app.services.kiro_service import KiroService, UpstreamAPIError
 from app.services.anthropic_adapter import AnthropicAdapter
 from app.services.kiro_anthropic_converter import KiroAnthropicConverter
 from app.utils.kiro_converters import is_thinking_enabled
@@ -330,24 +330,42 @@ async def _create_message_impl(
             status_code=status.HTTP_400_BAD_REQUEST,
             content=error_response.model_dump(),
         )
+    except UpstreamAPIError as e:
+        logger.warning(
+            f"上游API错误: status={e.status_code}, message={e.extracted_message}"
+        )
+
+        error_response = AnthropicAdapter.create_error_response(
+            error_type="api_error",
+            message=f"消息创建失败: 上游API返回错误: {e.status_code}",
+        )
+        return JSONResponse(
+            status_code=e.status_code,
+            content=error_response.model_dump(),
+        )
     except Exception as e:
         logger.error(f"消息创建失败: {str(e)}")
 
         # 尝试获取上游错误信息
         upstream_error = None
-        if hasattr(e, "response_data"):
-            upstream_error = e.response_data
-        elif hasattr(e, "response"):
+        response_data = getattr(e, "response_data", None)
+        response_obj = getattr(e, "response", None)
+
+        if response_data is not None:
+            upstream_error = response_data
+        elif response_obj is not None:
             try:
                 upstream_error = (
-                    e.response.json()
-                    if hasattr(e.response, "json")
+                    response_obj.json()
+                    if hasattr(response_obj, "json")
                     else str(
-                        e.response.text if hasattr(e.response, "text") else e.response
+                        response_obj.text
+                        if hasattr(response_obj, "text")
+                        else response_obj
                     )
                 )
             except Exception:
-                upstream_error = str(e.response) if hasattr(e, "response") else None
+                upstream_error = str(response_obj)
 
         # Dump错误信息
         dump_error_to_file(
@@ -460,6 +478,66 @@ async def create_message_cc(
         endpoint="/cc/v1/messages",
         buffer_for_claude_code=True,
     )
+
+
+@cc_router.get(
+    "/models",
+    summary="获取模型列表（Claude Code兼容）",
+    description=(
+        "返回 OpenAI 风格 models 列表（{object:'list', data:[...] }）。"
+        "\n\n配置选择：优先使用 API key 绑定的 config_type；"
+        "若为 JWT 登录且无法设置 X-Api-Type，可使用 query 参数 api_type=kiro/antigravity/qwen。"
+    ),
+)
+async def list_models_cc(
+    raw_request: Request,
+    api_type: Optional[str] = Query(
+        None, description="可选：覆盖配置类型 (kiro/antigravity/qwen)"
+    ),
+    current_user: User = Depends(get_user_flexible_with_x_api_key),
+    antigravity_service: PluginAPIService = Depends(get_plugin_api_service),
+    kiro_service: KiroService = Depends(get_kiro_service),
+):
+    """Claude Code 兼容端点：/cc/v1/models"""
+    try:
+        config_type = getattr(current_user, "_config_type", None)
+
+        # JWT token 模式：允许通过 query/api header 指定配置
+        if config_type is None:
+            candidate = (api_type or "").strip().lower() if api_type else None
+            if not candidate:
+                candidate = raw_request.headers.get("X-Api-Type")
+            if candidate in ["kiro", "antigravity", "qwen"]:
+                config_type = candidate
+
+        use_kiro = config_type == "kiro"
+
+        if use_kiro:
+            # 检查 beta 权限（管理员放行）
+            if current_user.beta != 1 and getattr(current_user, "trust_level", 0) < 3:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Kiro配置仅对beta计划用户开放",
+                )
+            return await kiro_service.get_models(current_user.id)
+
+        # 默认走 Antigravity / Qwen（由 plugin 根据 config_type 决定）
+        return await antigravity_service.get_models(
+            current_user.id, config_type=config_type
+        )
+
+    except HTTPException:
+        raise
+    except UpstreamAPIError as e:
+        return JSONResponse(
+            status_code=e.status_code,
+            content={"error": e.extracted_message, "type": "api_error"},
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"获取模型列表失败: {str(e)}",
+        )
 
 
 @cc_router.post(

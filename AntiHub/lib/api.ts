@@ -2208,15 +2208,24 @@ export interface KiroModelMappings {
  * 获取 Kiro 可用模型列表
  */
 export async function getKiroModels(): Promise<KiroModelsResponse> {
-  return fetchWithAuth<KiroModelsResponse>(
-    `${API_BASE_URL}/v1/models`,
-    { 
-      method: 'GET',
-      headers: {
-        'X-Api-Type': 'kiro'
+  try {
+    // Claude Code 兼容路径：不依赖自定义 header，使用 query 指定 kiro
+    return await fetchWithAuth<KiroModelsResponse>(
+      `${API_BASE_URL}/cc/v1/models?api_type=kiro`,
+      { method: 'GET' }
+    );
+  } catch {
+    // 回退到旧路径（兼容老后端）
+    return fetchWithAuth<KiroModelsResponse>(
+      `${API_BASE_URL}/v1/models`,
+      {
+        method: 'GET',
+        headers: {
+          'X-Api-Type': 'kiro'
+        }
       }
-    }
-  );
+    );
+  }
 }
 
 /**
