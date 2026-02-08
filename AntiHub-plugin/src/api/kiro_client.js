@@ -19,6 +19,142 @@ class KiroClient {
     this._balanceUpdateInterval = 60 * 1000;
   }
 
+  _truncateText(value, maxChars) {
+    if (typeof value !== 'string') return value;
+    if (!Number.isFinite(maxChars) || maxChars <= 0) return '';
+    if (value.length <= maxChars) return value;
+    return value.slice(0, maxChars) + '\n[truncated]';
+  }
+
+  _applyToolDescriptionBudget(tools, maxDescChars) {
+    if (!Array.isArray(tools)) return;
+    for (const t of tools) {
+      const spec = t?.toolSpecification || t?.tool_specification;
+      if (!spec) continue;
+      if (typeof spec.description === 'string' && spec.description.length > maxDescChars) {
+        spec.description = this._truncateText(spec.description, maxDescChars);
+      }
+    }
+  }
+
+  _applyToolResultsBudget(toolResults, maxChars) {
+    if (!Array.isArray(toolResults)) return;
+    for (const r of toolResults) {
+      if (!r) continue;
+      const content = r.content;
+      if (typeof content === 'string') {
+        r.content = this._truncateText(content, maxChars);
+        continue;
+      }
+      if (Array.isArray(content)) {
+        for (const c of content) {
+          if (!c) continue;
+          if (typeof c === 'string') {
+            // Rare, but keep safe
+            const idx = content.indexOf(c);
+            if (idx >= 0) content[idx] = this._truncateText(c, maxChars);
+            continue;
+          }
+          if (typeof c.text === 'string') {
+            c.text = this._truncateText(c.text, maxChars);
+          }
+        }
+      }
+    }
+  }
+
+  _applyConversationStateBudget(payload, config) {
+    const steps = [];
+    const maxBytes = config?.maxRequestBytes;
+    const maxHistory = config?.maxHistoryMessages;
+    const maxToolResultChars = config?.maxToolResultChars;
+    const maxToolDescriptionChars = config?.maxToolDescriptionChars;
+
+    const calcBytes = (obj) => Buffer.byteLength(JSON.stringify(obj));
+    const budgetBytes = (obj) => {
+      if (!Number.isFinite(maxBytes) || maxBytes <= 0) return { before: calcBytes(obj), after: calcBytes(obj), steps };
+
+      const before = calcBytes(obj);
+
+      try {
+        const cm = obj?.conversationState?.currentMessage?.userInputMessage;
+        const cs = obj?.conversationState;
+
+        // Truncate tool descriptions (they can be huge, but must stay non-empty)
+        if (Number.isFinite(maxToolDescriptionChars) && maxToolDescriptionChars > 0) {
+          this._applyToolDescriptionBudget(cm?.userInputMessageContext?.tools, maxToolDescriptionChars);
+          steps.push(`tools.description<=${maxToolDescriptionChars}`);
+        }
+
+        // Truncate tool results (history + current)
+        if (Number.isFinite(maxToolResultChars) && maxToolResultChars > 0) {
+          this._applyToolResultsBudget(cm?.userInputMessageContext?.toolResults, maxToolResultChars);
+          const history = Array.isArray(cs?.history) ? cs.history : [];
+          for (const msg of history) {
+            this._applyToolResultsBudget(msg?.userInputMessage?.userInputMessageContext?.toolResults, maxToolResultChars);
+          }
+          steps.push(`toolResults.text<=${maxToolResultChars}`);
+        }
+
+        // Remove tools from history messages (only currentMessage tools should matter)
+        const history = Array.isArray(cs?.history) ? cs.history : null;
+        if (history) {
+          let removed = 0;
+          for (const msg of history) {
+            const ctx = msg?.userInputMessage?.userInputMessageContext;
+            if (ctx && Array.isArray(ctx.tools) && ctx.tools.length > 0) {
+              delete ctx.tools;
+              removed++;
+            }
+          }
+          if (removed > 0) steps.push(`history.tools removed:${removed}`);
+        }
+
+        // If still too big, shrink history window
+        if (Number.isFinite(maxHistory) && maxHistory >= 0 && Array.isArray(cs?.history) && cs.history.length > maxHistory) {
+          cs.history = cs.history.slice(-maxHistory);
+          steps.push(`history.tail=${maxHistory}`);
+        }
+
+        // If still too big, progressively reduce history.
+        let after = calcBytes(obj);
+        if (after > maxBytes && Array.isArray(cs?.history)) {
+          const limits = Array.isArray(config?.historyLimitSteps)
+            ? config.historyLimitSteps
+            : [160, 128, 96, 64, 48, 32, 24, 16, 12, 8, 4, 2, 0];
+
+          for (const limit of limits) {
+            if (!Array.isArray(cs.history)) break;
+            if (limit === 0) {
+              cs.history = [];
+              steps.push('history.cleared');
+            } else if (cs.history.length > limit) {
+              cs.history = cs.history.slice(-limit);
+              steps.push(`history.tail=${limit}`);
+            }
+            after = calcBytes(obj);
+            if (after <= maxBytes) break;
+          }
+        }
+
+        // Last resort: drop history entirely
+        let finalBytes = calcBytes(obj);
+        if (finalBytes > maxBytes && obj?.conversationState) {
+          obj.conversationState.history = [];
+          steps.push('history.force_cleared');
+          finalBytes = calcBytes(obj);
+        }
+
+        return { before, after: finalBytes, steps };
+      } catch {
+        const after = calcBytes(obj);
+        return { before, after, steps };
+      }
+    };
+
+    return budgetBytes(payload);
+  }
+
   /**
    * 检查是否应该更新余额（节流）
    * @param {string} accountId - 账号ID
@@ -280,71 +416,132 @@ class KiroClient {
     if (typeof account.profile_arn === 'string' && account.profile_arn.trim()) {
       payload.profileArn = account.profile_arn.trim();
     }
-    const requestBody = JSON.stringify(payload);
+    const contextInfo = {
+      user_id,
+      account_id: account.account_id,
+      model_id: model,
+      is_shared: account.is_shared
+    };
 
-    // DEBUG: dump 请求关键信息排查 400
-    const cs = payload?.conversationState;
-    const cm = cs?.currentMessage?.userInputMessage;
-    const toolsCount = cm?.userInputMessageContext?.tools?.length || 0;
-    logger.info(`[${requestId}] DEBUG payload: modelId=${cm?.modelId}, tools_count=${toolsCount}, history_count=${cs?.history?.length || 0}, content_len=${cm?.content?.length || 0}`);
-    
-    fs.writeFileSync(`/tmp/kiro_request_${requestId}.json`, JSON.stringify(payload, null, 2));
-    logger.info(`[${requestId}] DEBUG request dumped to /tmp/kiro_request_${requestId}.json`);
+    const shouldRetryImproper = (err) => {
+      const statusCode = err?.statusCode;
+      const body = typeof err?.errorBody === 'string' ? err.errorBody : '';
+      if (statusCode !== 400) return false;
+      if (body.includes('Improperly formed request')) return true;
+      // Some upstream responses may omit reason; keep fallback.
+      return body.includes('formed request');
+    };
 
-    return new Promise((resolve, reject) => {
-      const headers = kiroService.getCodeWhispererHeaders(account.access_token, account.machineid, account.region);
-      headers['Content-Length'] = Buffer.byteLength(requestBody);
-
-      const reqOptions = {
-        hostname: headers.host,
-        path: '/generateAssistantResponse',
-        method: 'POST',
-        headers
+    const sendOnce = async (attempt, attemptPayload) => {
+      const budgetConfig = {
+        maxRequestBytes: options?.maxRequestBytes ?? (650 * 1024),
+        maxHistoryMessages:
+          attempt === 0
+            ? (options?.maxHistoryMessages ?? 200)
+            : attempt === 1
+              ? 160
+              : 120,
+        maxToolResultChars:
+          attempt === 0
+            ? (options?.maxToolResultChars ?? 8000)
+            : attempt === 1
+              ? 4000
+              : 2000,
+        maxToolDescriptionChars: options?.maxToolDescriptionChars ?? 1024,
+        historyLimitSteps: attempt === 0 ? undefined : [160, 128, 96, 64, 48, 32, 24, 16, 12, 8, 4, 2, 0]
       };
 
-      const req = https.request(reqOptions, (res) => {
-        logger.info(`[${requestId}] 收到响应: status=${res.statusCode}`);
+      const { before, after, steps } = this._applyConversationStateBudget(attemptPayload, budgetConfig);
+      if (before !== after) {
+        logger.warn(
+          `[${requestId}] payload budget applied (attempt=${attempt}): bytes ${before} -> ${after}, steps=${steps.join(',')}`
+        );
+      }
 
-        if (res.statusCode !== 200) {
-          let errorBody = '';
-          res.on('data', chunk => errorBody += chunk);
-          res.on('end', () => {
-            logger.error(`[${requestId}] API错误: ${res.statusCode} - ${errorBody}`);
+      const requestBody = JSON.stringify(attemptPayload);
 
-            // 402 或 403 错误时自动禁用账号
-            if (res.statusCode === 402 || res.statusCode === 403) {
-              kiroAccountService.updateAccountStatus(account.account_id, 0);
-              logger.warn(`Kiro账号已禁用(${res.statusCode}): account_id=${account.account_id}`);
-            }
+      // DEBUG: dump 请求关键信息排查 400
+      const cs = attemptPayload?.conversationState;
+      const cm = cs?.currentMessage?.userInputMessage;
+      const toolsCount = cm?.userInputMessageContext?.tools?.length || 0;
+      logger.info(
+        `[${requestId}] DEBUG payload(attempt=${attempt}): modelId=${cm?.modelId}, tools_count=${toolsCount}, history_count=${cs?.history?.length || 0}, content_len=${cm?.content?.length || 0}`
+      );
 
-            reject(new Error(`错误: ${res.statusCode} ${errorBody}`));
-          });
-          return;
-        }
+      const dumpPath = attempt === 0
+        ? `/tmp/kiro_request_${requestId}.json`
+        : `/tmp/kiro_request_${requestId}_a${attempt}.json`;
+      fs.writeFileSync(dumpPath, JSON.stringify(attemptPayload, null, 2));
+      logger.info(`[${requestId}] DEBUG request dumped to ${dumpPath}`);
 
-        const contextInfo = {
-          user_id,
-          account_id: account.account_id,
-          model_id: model,
-          is_shared: account.is_shared
+      return new Promise((resolve, reject) => {
+        const headers = kiroService.getCodeWhispererHeaders(account.access_token, account.machineid, account.region);
+        headers['Content-Length'] = Buffer.byteLength(requestBody);
+
+        const reqOptions = {
+          hostname: headers.host,
+          path: '/generateAssistantResponse',
+          method: 'POST',
+          headers
         };
 
-        this.handleStreamResponse(res, callback, requestId, contextInfo)
-          .then(() => {
-            logger.info(`[${requestId}] 请求完成`);
-            resolve();
-          })
-          .catch(reject);
-      });
+        const req = https.request(reqOptions, (res) => {
+          logger.info(`[${requestId}] 收到响应: status=${res.statusCode}`);
 
-      req.on('error', (error) => {
-        logger.error(`[${requestId}] 请求异常:`, error.message);
-        reject(error);
-      });
+          if (res.statusCode !== 200) {
+            let errorBody = '';
+            res.on('data', chunk => errorBody += chunk);
+            res.on('end', () => {
+              logger.error(`[${requestId}] API错误: ${res.statusCode} - ${errorBody}`);
 
-      req.write(requestBody);
-      req.end();
-    });
+              // 402 或 403 错误时自动禁用账号
+              if (res.statusCode === 402 || res.statusCode === 403) {
+                kiroAccountService.updateAccountStatus(account.account_id, 0);
+                logger.warn(`Kiro账号已禁用(${res.statusCode}): account_id=${account.account_id}`);
+              }
+
+              const err = new Error(`错误: ${res.statusCode} ${errorBody}`);
+              err.statusCode = res.statusCode;
+              err.errorBody = errorBody;
+              reject(err);
+            });
+            return;
+          }
+
+          this.handleStreamResponse(res, callback, requestId, contextInfo)
+            .then(() => {
+              logger.info(`[${requestId}] 请求完成`);
+              resolve();
+            })
+            .catch(reject);
+        });
+
+        req.on('error', (error) => {
+          logger.error(`[${requestId}] 请求异常:`, error.message);
+          reject(error);
+        });
+
+        req.write(requestBody);
+        req.end();
+      });
+    };
+
+    const maxAttempts = options?.improperFormRetryAttempts ?? 2;
+    let lastError = null;
+    for (let attempt = 0; attempt <= maxAttempts; attempt++) {
+      const attemptPayload = JSON.parse(JSON.stringify(payload));
+      try {
+        return await sendOnce(attempt, attemptPayload);
+      } catch (err) {
+        lastError = err;
+        if (shouldRetryImproper(err) && attempt < maxAttempts) {
+          logger.warn(`[${requestId}] upstream 400 Improperly formed request; retrying with degraded payload (attempt=${attempt + 1})`);
+          continue;
+        }
+        throw err;
+      }
+    }
+    throw lastError || new Error('Kiro请求失败');
   }
 
   /**
